@@ -1,0 +1,6 @@
+worker/node_modules/
+worker/wrangler.generated.toml
+worker/.wrangler/
+*.log
+.DS_Store
+Thumbs.db

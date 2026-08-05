@@ -1,0 +1,23 @@
+Исправление убирает аварийный /admin/setup, из-за которого Cloudflare показывал error 1101.
+Webhook теперь настраивается напрямую через Telegram API в GitHub Actions и проверяется после установки.
+SETUP_TOKEN и TELEGRAM_WEBHOOK_SECRET больше не нужны.
+
+ЗАМЕНИТЬ В РЕПОЗИТОРИИ РОВНО 4 ФАЙЛА:
+
+1) .github\workflows\deploy-worker.yml
+2) worker\src\config.ts
+3) worker\src\index.ts
+4) worker\src\types.ts
+
+ЧЕРЕЗ GITHUB DESKTOP:
+1. Распаковать архив.
+2. Repository -> Show in Explorer.
+3. Скопировать папки .github и worker из архива в папку репозитория.
+4. Согласиться на объединение папок и замену четырёх файлов.
+5. Summary: final webhook fix
+6. Commit to main.
+7. Push origin.
+8. Дождаться зелёного Deploy Telegram queue worker.
+
+PyCharm, приложение и GitHub Secrets не трогать.
+Старые SETUP_TOKEN и TELEGRAM_WEBHOOK_SECRET можно оставить: новый код их игнорирует.

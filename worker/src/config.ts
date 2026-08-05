@@ -4,12 +4,10 @@ export function telegramBotToken(env: Env): string {
   return required(env.TELEGRAM_BOT_TOKEN, "TELEGRAM_BOT_TOKEN");
 }
 
-export function telegramWebhookSecret(env: Env): string {
-  return required(env.TELEGRAM_WEBHOOK_SECRET, "TELEGRAM_WEBHOOK_SECRET");
-}
-
-export function setupToken(env: Env): string {
-  return required(env.SETUP_TOKEN, "SETUP_TOKEN");
+export async function telegramWebhookSecret(env: Env): Promise<string> {
+  const token = telegramBotToken(env);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export function adminClaimCode(env: Env): string {

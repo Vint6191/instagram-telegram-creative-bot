@@ -23,8 +23,6 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
-      SETUP_TOKEN: ${{ secrets.SETUP_TOKEN }}
       ROOT_ADMIN_ID: ${{ secrets.ROOT_ADMIN_ID }}
       ADMIN_CLAIM_CODE: ${{ secrets.ADMIN_CLAIM_CODE }}
       KV_TITLE: instagram-creative-bot-config
@@ -46,12 +44,14 @@ jobs:
         working-directory: worker
         run: npm run check
 
-      - name: Check Cloudflare credentials
+      - name: Check required credentials
         shell: bash
         run: |
           set -euo pipefail
           [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo "Missing CLOUDFLARE_API_TOKEN" >&2; exit 1; }
           [[ -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo "Missing CLOUDFLARE_ACCOUNT_ID" >&2; exit 1; }
+          normalized_token="$(python -c 'import os; print(os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(), end="")')"
+          [[ -n "$normalized_token" ]] || { echo "Missing TELEGRAM_BOT_TOKEN" >&2; exit 1; }
 
       - name: Create or find Cloudflare KV
         shell: bash
@@ -92,21 +92,24 @@ jobs:
         working-directory: worker
         run: npx wrangler deploy --config wrangler.generated.toml
 
-      - name: Sync Worker secrets when present
+      - name: Sync Worker secrets
         working-directory: worker
         shell: bash
         run: |
           set -euo pipefail
 
-          normalize_secret() {
+          normalize() {
             python -c 'import sys; print(sys.stdin.read().strip(), end="")'
           }
 
-          put_secret() {
+          bot_token="$(printf '%s' "$TELEGRAM_BOT_TOKEN" | normalize)"
+          printf '%s' "$bot_token" | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.generated.toml >/dev/null
+          echo "Synced TELEGRAM_BOT_TOKEN"
+
+          put_optional_secret() {
             local name="$1"
-            local raw_value="$2"
             local value
-            value="$(printf '%s' "$raw_value" | normalize_secret)"
+            value="$(printf '%s' "$2" | normalize)"
             if [[ -n "$value" ]]; then
               printf '%s' "$value" | npx wrangler secret put "$name" --config wrangler.generated.toml >/dev/null
               echo "Synced $name"
@@ -115,16 +118,23 @@ jobs:
             fi
           }
 
-          put_secret TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
-          put_secret TELEGRAM_WEBHOOK_SECRET "$TELEGRAM_WEBHOOK_SECRET"
-          put_secret SETUP_TOKEN "$SETUP_TOKEN"
-          put_secret ROOT_ADMIN_ID "$ROOT_ADMIN_ID"
-          put_secret ADMIN_CLAIM_CODE "$ADMIN_CLAIM_CODE"
+          put_optional_secret ROOT_ADMIN_ID "$ROOT_ADMIN_ID"
+          put_optional_secret ADMIN_CLAIM_CODE "$ADMIN_CLAIM_CODE"
 
-      - name: Resolve Worker URL and finish setup
+      - name: Configure and verify Telegram webhook
         shell: bash
         run: |
           set -euo pipefail
+
+          bot_token="$(python -c 'import os; print(os.environ["TELEGRAM_BOT_TOKEN"].strip(), end="")')"
+          webhook_secret="$(python - <<'PY'
+          import hashlib
+          import os
+          token = os.environ["TELEGRAM_BOT_TOKEN"].strip().encode("utf-8")
+          print(hashlib.sha256(token).hexdigest())
+          PY
+          )"
+
           response="$(curl --fail-with-body --silent --show-error \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain")"
@@ -132,41 +142,69 @@ jobs:
           [[ -n "$subdomain" && "$subdomain" != "null" ]] || { echo "Could not resolve workers.dev subdomain" >&2; exit 1; }
 
           worker_url="https://instagram-creative-bot.${subdomain}.workers.dev"
-          curl --fail-with-body --silent --show-error "$worker_url/health"
-          echo
+          health="$(curl --fail-with-body --silent --show-error "$worker_url/health")"
+          [[ "$(jq -r '.ok' <<<"$health")" == "true" ]] || { echo "$health" >&2; exit 1; }
+          echo "$health"
 
-          setup_token="$(python -c 'import os; print(os.environ.get("SETUP_TOKEN", "").strip(), end="")')"
-          if [[ -n "$setup_token" ]]; then
-            setup_ok=0
-            for attempt in {1..12}; do
-              http_code="$(curl --silent --show-error \
-                --output setup-response.txt \
-                --write-out '%{http_code}' \
-                -X POST \
-                -H "Authorization: Bearer $setup_token" \
-                "$worker_url/admin/setup" || true)"
+          # Secret updates create a new Worker version. Wait until that version
+          # accepts the webhook secret derived from the current bot token.
+          ready=0
+          for attempt in {1..18}; do
+            code="$(curl --silent --show-error \
+              --output webhook-probe.txt \
+              --write-out '%{http_code}' \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -H "X-Telegram-Bot-Api-Secret-Token: $webhook_secret" \
+              --data '{"update_id":0}' \
+              "$worker_url/telegram/webhook" || true)"
+            if [[ "$code" == "200" ]]; then
+              ready=1
+              break
+            fi
+            echo "Worker is applying the new Telegram token ($attempt/18, HTTP $code)..."
+            sleep 5
+          done
+          [[ "$ready" == "1" ]] || {
+            echo "Worker never accepted the webhook secret for the current bot token" >&2
+            cat webhook-probe.txt >&2 || true
+            exit 1
+          }
 
-              if [[ "$http_code" == "200" ]]; then
-                cat setup-response.txt
-                echo
-                setup_ok=1
-                break
-              fi
+          api="https://api.telegram.org/bot${bot_token}"
+          me="$(curl --fail-with-body --silent --show-error -X POST "$api/getMe")"
+          [[ "$(jq -r '.ok' <<<"$me")" == "true" ]] || { echo "$me" >&2; exit 1; }
 
-              if [[ "$http_code" == "401" && "$attempt" -lt 12 ]]; then
-                echo "Worker secret is still propagating; retrying setup ($attempt/12)..."
-                sleep 5
-                continue
-              fi
+          webhook_payload="$(jq -cn \
+            --arg url "$worker_url/telegram/webhook" \
+            --arg secret "$webhook_secret" \
+            '{url:$url,secret_token:$secret,allowed_updates:["message","callback_query"],drop_pending_updates:false,max_connections:10}')"
+          webhook="$(curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Content-Type: application/json" \
+            --data "$webhook_payload" \
+            "$api/setWebhook")"
+          [[ "$(jq -r '.ok' <<<"$webhook")" == "true" ]] || { echo "$webhook" >&2; exit 1; }
 
-              echo "Webhook setup failed with HTTP $http_code" >&2
-              cat setup-response.txt >&2 || true
-              exit 1
-            done
+          commands='{"commands":[{"command":"start","description":"Открыть бота"},{"command":"claim","description":"Назначить владельца при первом запуске"},{"command":"settings","description":"Настройки (только владелец)"},{"command":"join","description":"Войти по приглашению"},{"command":"settarget","description":"Назначить текущую группу"},{"command":"queue","description":"Состояние очереди"}]}'
+          commands_result="$(curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Content-Type: application/json" \
+            --data "$commands" \
+            "$api/setMyCommands")"
+          [[ "$(jq -r '.ok' <<<"$commands_result")" == "true" ]] || { echo "$commands_result" >&2; exit 1; }
 
-            [[ "$setup_ok" == "1" ]] || { echo "Webhook setup did not complete" >&2; exit 1; }
-          else
-            echo "SETUP_TOKEN is absent in GitHub Secrets; existing Telegram webhook was left unchanged."
-          fi
+          info="$(curl --fail-with-body --silent --show-error -X POST "$api/getWebhookInfo")"
+          [[ "$(jq -r '.ok' <<<"$info")" == "true" ]] || { echo "$info" >&2; exit 1; }
+          actual_url="$(jq -r '.result.url // empty' <<<"$info")"
+          [[ "$actual_url" == "$worker_url/telegram/webhook" ]] || {
+            echo "Telegram returned the wrong webhook URL: $actual_url" >&2
+            exit 1
+          }
 
+          bot_username="$(jq -r '.result.username // empty' <<<"$me")"
+          pending="$(jq -r '.result.pending_update_count // 0' <<<"$info")"
+          echo "Telegram bot: @${bot_username}"
+          echo "Webhook configured and verified: $actual_url"
+          echo "Pending Telegram updates: $pending"
           echo "Worker is live: $worker_url"

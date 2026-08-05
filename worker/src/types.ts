@@ -4,10 +4,8 @@ export interface Env {
   CONFIG: KVNamespace;
   QUEUE: DurableObjectNamespace<JobQueue>;
   TELEGRAM_BOT_TOKEN?: string;
-  TELEGRAM_WEBHOOK_SECRET?: string;
   ROOT_ADMIN_ID?: string;
   ADMIN_CLAIM_CODE?: string;
-  SETUP_TOKEN?: string;
 }
 
 export type ChatType = "private" | "group" | "supergroup" | "channel";

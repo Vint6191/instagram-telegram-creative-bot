@@ -1,15 +1,19 @@
 name = "instagram-creative-bot"
 main = "src/index.ts"
 compatibility_date = "2026-08-05"
+compatibility_flags = ["global_fetch_strictly_public"]
 workers_dev = true
 
-# GitHub Actions automatically creates this KV namespace and replaces the placeholder.
+# GitHub Actions automatically creates/finds this KV namespace
+# and replaces the placeholder before deployment.
 [[kv_namespaces]]
 binding = "CONFIG"
 id = "__KV_NAMESPACE_ID__"
 
-[vars]
-GITHUB_REF = "main"
-GITHUB_WORKFLOW = "process-instagram.yml"
-GITHUB_OWNER = "__GITHUB_OWNER__"
-GITHUB_REPO = "__GITHUB_REPO__"
+[[durable_objects.bindings]]
+name = "QUEUE"
+class_name = "JobQueue"
+
+[exports.JobQueue]
+type = "durable-object"
+storage = "sqlite"

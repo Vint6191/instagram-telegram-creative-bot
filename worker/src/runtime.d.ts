@@ -30,3 +30,40 @@ interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
 }
+
+interface ExportedHandler<Env = unknown> {
+  fetch?(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response>;
+}
+
+interface SqlStorageCursor<T> extends Iterable<T> {
+  toArray(): T[];
+  one(): T;
+}
+
+interface DurableObjectSqlStorage {
+  exec<T = Record<string, unknown>>(
+    query: string,
+    ...bindings: unknown[]
+  ): SqlStorageCursor<T>;
+}
+
+interface DurableObjectStorage {
+  sql: DurableObjectSqlStorage;
+}
+
+interface DurableObjectState {
+  storage: DurableObjectStorage;
+  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
+}
+
+interface DurableObjectNamespace<T = unknown> {
+  getByName(name: string): T;
+}
+
+declare module "cloudflare:workers" {
+  export class DurableObject<Env = unknown> {
+    protected readonly ctx: DurableObjectState;
+    protected readonly env: Env;
+    constructor(ctx: DurableObjectState, env: Env);
+  }
+}

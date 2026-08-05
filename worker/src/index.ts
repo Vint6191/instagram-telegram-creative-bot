@@ -3,21 +3,33 @@ import {
   telegramBotToken,
   telegramWebhookSecret,
 } from "./config";
+import { handleAgentApi } from "./agent-api";
 import { UpdateHandler } from "./handlers";
+import { JobQueue } from "./job-queue";
 import { ConfigStore } from "./store";
 import { TelegramClient } from "./telegram";
 import type { Env, TelegramUpdate } from "./types";
+
+export { JobQueue };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return Response.json({ ok: true });
+      const stats = await env.QUEUE.getByName("instagram-creative-global-queue").stats();
+      return Response.json(
+        { ok: true, mode: "local-desktop-queue", queue: stats },
+        { headers: { "cache-control": "no-store" } },
+      );
     }
 
     if (request.method === "POST" && url.pathname === "/admin/setup") {
       return setupBot(request, env, url.origin);
+    }
+
+    if (url.pathname.startsWith("/agent/")) {
+      return handleAgentApi(request, env, url.pathname);
     }
 
     if (request.method === "POST" && url.pathname === "/telegram/webhook") {
@@ -44,7 +56,7 @@ export default {
 
     return new Response("Not Found", { status: 404 });
   },
-};
+} satisfies ExportedHandler<Env>;
 
 async function setupBot(request: Request, env: Env, origin: string): Promise<Response> {
   const authorization = request.headers.get("authorization");
@@ -67,5 +79,6 @@ async function setupBot(request: Request, env: Env, origin: string): Promise<Res
     ok: true,
     bot: bot.username ? `@${bot.username}` : String(bot.id),
     webhook: `${origin}/telegram/webhook`,
+    mode: "local-desktop-queue",
   });
 }

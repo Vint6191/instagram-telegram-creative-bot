@@ -1,5 +1,5 @@
 import { adminClaimCode, telegramBotToken } from "./config";
-import { dispatchDownloadWorkflow } from "./github";
+import { queueStub } from "./queue";
 import { extractInstagramUrls } from "./instagram-url";
 import { ConfigStore } from "./store";
 import {
@@ -25,6 +25,7 @@ const CALLBACK = {
   TARGET: "settings:target",
   INVITE: "users:invite",
   CLEAR_TARGET: "target:clear",
+  QUEUE: "settings:queue",
 } as const;
 
 export class UpdateHandler {
@@ -171,6 +172,12 @@ export class UpdateHandler {
           `❌ ${escapeHtml(reason)}`,
         );
       }
+      return;
+    }
+
+    if (name === "queue") {
+      if (!(await this.store.isRootAdmin(user.id))) return;
+      await this.sendQueueStatus(message.chat.id);
       return;
     }
 
@@ -327,26 +334,36 @@ export class UpdateHandler {
   ): Promise<void> {
     const status = await this.telegram.sendMessage(
       message.chat.id,
-      "⏳ Принял. Скачиваю и публикую…",
+      "🕓 Добавляю в очередь…",
     );
 
-    const requestId = `${message.chat.id}:${message.message_id}:${Date.now()}`;
-
     try {
-      await dispatchDownloadWorkflow(this.env, {
+      const result = await queueStub(this.env).enqueue({
+        requestKey: `${message.chat.id}:${message.message_id}`,
         url,
-        requester_id: String(user.id),
-        source_chat_id: String(message.chat.id),
-        status_message_id: String(status.message_id),
-        target_chat_id: target.chatId,
-        request_id: requestId,
+        requesterId: String(user.id),
+        requesterName: displayName(user),
+        sourceChatId: String(message.chat.id),
+        sourceMessageId: String(message.message_id),
+        statusMessageId: String(status.message_id),
+        targetChatId: target.chatId,
       });
-    } catch (error) {
-      console.error("workflow dispatch failed", safeError(error));
+      const stats = await queueStub(this.env).stats();
+      const computer = stats.onlineAgents > 0
+        ? "🟢 Компьютер онлайн — заберёт задачу автоматически."
+        : "🟡 Компьютер сейчас офлайн. Ссылка сохранена и не потеряется.";
+      const duplicate = result.duplicate ? "\nЭта ссылка из сообщения уже была добавлена." : "";
       await this.telegram.editMessageText(
         message.chat.id,
         status.message_id,
-        "❌ Не удалось запустить загрузку. Владельцу нужно проверить GitHub Actions и токен.",
+        `✅ Добавлено в очередь. Позиция: <b>${result.position}</b>.\n${computer}${duplicate}`,
+      );
+    } catch (error) {
+      console.error("queue enqueue failed", safeError(error));
+      await this.telegram.editMessageText(
+        message.chat.id,
+        status.message_id,
+        "❌ Не удалось сохранить задачу в очередь. Владельцу нужно проверить Cloudflare Worker.",
       );
     }
   }
@@ -376,6 +393,14 @@ export class UpdateHandler {
           chatId,
           messageId,
           "<b>Куда публиковать</b>\n\nДля группы: добавь бота и отправь в ней <code>/settarget</code>.\n\nДля канала: назначь бота администратором с правом публикации и перешли сюда любой пост из канала.",
+          { reply_markup: backKeyboard() },
+        );
+      } else if (data === CALLBACK.QUEUE) {
+        const stats = await queueStub(this.env).stats();
+        await this.telegram.editMessageText(
+          chatId,
+          messageId,
+          queueStatusText(stats),
           { reply_markup: backKeyboard() },
         );
       } else if (data === CALLBACK.INVITE) {
@@ -464,6 +489,11 @@ export class UpdateHandler {
     );
   }
 
+  private async sendQueueStatus(chatId: string | number): Promise<void> {
+    const stats = await queueStub(this.env).stats();
+    await this.telegram.sendMessage(chatId, queueStatusText(stats));
+  }
+
   private async saveTarget(chat: TelegramChat, configuredBy: string): Promise<void> {
     if (!["group", "supergroup", "channel"].includes(chat.type)) {
       throw new Error("Target must be a group, supergroup or channel");
@@ -541,6 +571,7 @@ function settingsKeyboard(hasTarget: boolean): Record<string, unknown> {
       { text: "👥 Пользователи", callback_data: CALLBACK.USERS },
       { text: "📣 Куда публиковать", callback_data: CALLBACK.TARGET },
     ],
+    [{ text: "📋 Очередь", callback_data: CALLBACK.QUEUE }],
   ];
   if (hasTarget) {
     rows.push([{ text: "Сбросить место публикации", callback_data: CALLBACK.CLEAR_TARGET }]);
@@ -578,6 +609,30 @@ function usersKeyboard(users: Array<{ id: string; username?: string; firstName: 
 
 function backKeyboard(): Record<string, unknown> {
   return { inline_keyboard: [[{ text: "← Назад", callback_data: CALLBACK.HOME }]] };
+}
+
+function queueStatusText(stats: { queued: number; working: number; completedToday: number; failedToday: number; onlineAgents: number; oldestQueuedAt?: number }): string {
+  const computer = stats.onlineAgents > 0 ? "🟢 онлайн" : "🟡 офлайн";
+  const oldest = stats.oldestQueuedAt
+    ? `\nСтарейшая задача ждёт: <b>${formatAge(Date.now() - stats.oldestQueuedAt)}</b>`
+    : "";
+  return [
+    "<b>Очередь</b>",
+    "",
+    `🖥 Компьютер: <b>${computer}</b>`,
+    `🕓 Ожидают: <b>${stats.queued}</b>`,
+    `⚙️ В работе: <b>${stats.working}</b>`,
+    `✅ Готово сегодня: <b>${stats.completedToday}</b>`,
+    `❌ Ошибок сегодня: <b>${stats.failedToday}</b>${oldest}`,
+  ].join("\n");
+}
+
+function formatAge(milliseconds: number): string {
+  const minutes = Math.max(0, Math.floor(milliseconds / 60_000));
+  if (minutes < 60) return `${minutes} мин.`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} ч. ${rest} мин.` : `${hours} ч.`;
 }
 
 function safeError(error: unknown): Record<string, unknown> {

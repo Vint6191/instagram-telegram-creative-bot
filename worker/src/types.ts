@@ -1,15 +1,19 @@
+import type { JobQueue } from "./job-queue";
+
 export interface Env {
   CONFIG: KVNamespace;
+  QUEUE: DurableObjectNamespace<JobQueue>;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   ROOT_ADMIN_ID?: string;
   ADMIN_CLAIM_CODE?: string;
-  GITHUB_OWNER: string;
-  GITHUB_REPO: string;
+  SETUP_TOKEN?: string;
+  // Legacy optional fields kept so old repository files can remain harmless.
+  GITHUB_OWNER?: string;
+  GITHUB_REPO?: string;
   GITHUB_REF?: string;
   GITHUB_WORKFLOW?: string;
-  GITHUB_TOKEN: string;
-  SETUP_TOKEN?: string;
+  GITHUB_TOKEN?: string;
 }
 
 export type ChatType = "private" | "group" | "supergroup" | "channel";
@@ -94,9 +98,7 @@ export interface TelegramApiResponse<T> {
   result?: T;
   description?: string;
   error_code?: number;
-  parameters?: {
-    retry_after?: number;
-  };
+  parameters?: { retry_after?: number };
 }
 
 export interface AuthorizedUserRecord {
@@ -131,4 +133,73 @@ export interface GitHubDispatchInputs {
   status_message_id: string;
   target_chat_id: string;
   request_id: string;
+}
+
+export interface QueueJobInput {
+  requestKey: string;
+  url: string;
+  requesterId: string;
+  requesterName: string;
+  sourceChatId: string;
+  sourceMessageId: string;
+  statusMessageId: string;
+  targetChatId: string;
+}
+
+export type QueueJobStatus = "queued" | "leased" | "completed" | "failed" | "cancelled";
+export type QueueStage =
+  | "queued"
+  | "starting"
+  | "downloading"
+  | "preparing"
+  | "uploading"
+  | "completed"
+  | "failed";
+
+export interface QueueJobRecord {
+  id: string;
+  requestKey: string;
+  url: string;
+  requesterId: string;
+  requesterName: string;
+  sourceChatId: string;
+  sourceMessageId: string;
+  statusMessageId: string;
+  targetChatId: string;
+  status: QueueJobStatus;
+  stage: QueueStage;
+  createdAt: number;
+  updatedAt: number;
+  availableAt: number;
+  attemptCount: number;
+  maxAttempts: number;
+  leaseOwner?: string;
+  leaseToken?: string;
+  leaseExpiresAt?: number;
+  lastError?: string;
+  completedAt?: number;
+}
+
+export interface LeasedJob {
+  job: QueueJobRecord;
+  leaseToken: string;
+}
+
+export interface QueueStats {
+  queued: number;
+  working: number;
+  completedToday: number;
+  failedToday: number;
+  onlineAgents: number;
+  oldestQueuedAt?: number;
+}
+
+export interface AgentRecord {
+  id: string;
+  name: string;
+  hostname?: string;
+  appVersion?: string;
+  createdAt: number;
+  lastSeenAt: number;
+  disabled: boolean;
 }

@@ -348,15 +348,11 @@ export class UpdateHandler {
         statusMessageId: String(status.message_id),
         targetChatId: target.chatId,
       });
-      const stats = await queueStub(this.env).stats();
-      const computer = stats.onlineAgents > 0
-        ? "🟢 Компьютер онлайн — заберёт задачу автоматически."
-        : "🟡 Компьютер сейчас офлайн. Ссылка сохранена и не потеряется.";
       const duplicate = result.duplicate ? "\nЭта ссылка из сообщения уже была добавлена." : "";
       await this.telegram.editMessageText(
         message.chat.id,
         status.message_id,
-        `✅ Добавлено в очередь. Позиция: <b>${result.position}</b>.\n${computer}${duplicate}`,
+        `✅ В очереди · <b>${result.position}</b>${duplicate}`,
       );
     } catch (error) {
       console.error("queue enqueue failed", safeError(error));
@@ -612,19 +608,15 @@ function backKeyboard(): Record<string, unknown> {
 }
 
 function queueStatusText(stats: { queued: number; working: number; completedToday: number; failedToday: number; onlineAgents: number; oldestQueuedAt?: number }): string {
-  const computer = stats.onlineAgents > 0 ? "🟢 онлайн" : "🟡 офлайн";
   const oldest = stats.oldestQueuedAt
-    ? `\nСтарейшая задача ждёт: <b>${formatAge(Date.now() - stats.oldestQueuedAt)}</b>`
+    ? `\n⌛ <b>${formatAge(Date.now() - stats.oldestQueuedAt)}</b>`
     : "";
   return [
-    "<b>Очередь</b>",
-    "",
-    `🖥 Компьютер: <b>${computer}</b>`,
-    `🕓 Ожидают: <b>${stats.queued}</b>`,
-    `⚙️ В работе: <b>${stats.working}</b>`,
-    `✅ Готово сегодня: <b>${stats.completedToday}</b>`,
-    `❌ Ошибок сегодня: <b>${stats.failedToday}</b>${oldest}`,
-  ].join("\n");
+    `↓ <b>${stats.queued}</b>`,
+    `↻ <b>${stats.working}</b>`,
+    `✓ <b>${stats.completedToday}</b>`,
+    `! <b>${stats.failedToday}</b>${oldest}`,
+  ].join("   ");
 }
 
 function formatAge(milliseconds: number): string {

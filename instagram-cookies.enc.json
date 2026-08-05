@@ -1,82 +1,19 @@
-import { createDecipheriv, createHash, timingSafeEqual } from "node:crypto";
-import { chmod, readFile, writeFile } from "node:fs/promises";
-import process from "node:process";
+name = "instagram-creative-bot"
+main = "src/index.ts"
+compatibility_date = "2026-08-05"
+compatibility_flags = ["global_fetch_strictly_public"]
+workers_dev = true
 
-const REQUIRED_COOKIE_NAMES = new Set(["sessionid", "csrftoken", "ds_user_id"]);
+# GitHub Actions automatically creates/finds this KV namespace
+# and replaces the placeholder before deployment.
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "__KV_NAMESPACE_ID__"
 
-function fail(message) {
-  console.error(message);
-  process.exit(1);
-}
+[[durable_objects.bindings]]
+name = "QUEUE"
+class_name = "JobQueue"
 
-const [encryptedPath, outputPath] = process.argv.slice(2);
-if (!encryptedPath || !outputPath) {
-  fail("Usage: node scripts/decrypt-instagram-cookies.mjs <encrypted.json> <output.txt>");
-}
-
-const githubToken = (process.env.WORKER_GITHUB_TOKEN ?? "").trim();
-if (!githubToken) {
-  fail("Missing WORKER_GITHUB_TOKEN");
-}
-
-let payload;
-try {
-  payload = JSON.parse(await readFile(encryptedPath, "utf8"));
-} catch (error) {
-  fail(`Cannot read encrypted Instagram cookies: ${error instanceof Error ? error.message : error}`);
-}
-
-if (
-  payload?.version !== 1 ||
-  typeof payload.context !== "string" ||
-  typeof payload.ivBase64 !== "string" ||
-  typeof payload.ciphertextBase64 !== "string" ||
-  typeof payload.authTagBase64 !== "string"
-) {
-  fail("Encrypted Instagram cookie payload has an unsupported format");
-}
-
-const key = createHash("sha256")
-  .update(payload.context, "utf8")
-  .update("\0", "utf8")
-  .update(githubToken, "utf8")
-  .digest();
-
-let plaintext;
-try {
-  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(payload.ivBase64, "base64"));
-  decipher.setAAD(Buffer.from(payload.context, "utf8"));
-  decipher.setAuthTag(Buffer.from(payload.authTagBase64, "base64"));
-  plaintext = Buffer.concat([
-    decipher.update(Buffer.from(payload.ciphertextBase64, "base64")),
-    decipher.final(),
-  ]).toString("utf8");
-} catch {
-  fail("Instagram cookies cannot be decrypted. WORKER_GITHUB_TOKEN does not match the token used for this patch.");
-}
-
-validateCookies(plaintext);
-await writeFile(outputPath, plaintext, { encoding: "utf8", mode: 0o600 });
-await chmod(outputPath, 0o600);
-console.log("Instagram cookies decrypted and validated.");
-
-function validateCookies(text) {
-  if (!text.startsWith("# Netscape HTTP Cookie File")) {
-    fail("Instagram cookies are not in Netscape format");
-  }
-
-  const found = new Set();
-  for (const rawLine of text.split(/\r?\n/u)) {
-    if (!rawLine || rawLine.startsWith("#")) continue;
-    const columns = rawLine.split("\t");
-    if (columns.length < 7) continue;
-    const domain = (columns[0] ?? "").replace(/^\./u, "").toLowerCase();
-    const name = columns[5] ?? "";
-    if (domain === "instagram.com") found.add(name);
-  }
-
-  const missing = [...REQUIRED_COOKIE_NAMES].filter((name) => !found.has(name));
-  if (missing.length > 0) {
-    fail(`Instagram cookies are missing required values: ${missing.join(", ")}`);
-  }
-}
+[exports.JobQueue]
+type = "durable-object"
+storage = "sqlite"

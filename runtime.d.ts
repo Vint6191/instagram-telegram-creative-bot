@@ -1,170 +1,150 @@
-import { telegramBotToken } from "./config";
-import { LOCAL_AGENT_ID, LOCAL_AGENT_TOKEN } from "./local-agent";
-import { queueStub } from "./queue";
-import { TelegramClient, escapeHtml } from "./telegram";
-import type { AgentRecord, Env, QueueJobRecord, QueueStage } from "./types";
+import type {
+  TelegramApiResponse,
+  TelegramChat,
+  TelegramMessage,
+  TelegramUser,
+} from "./types";
 
-const APP_VERSION_HEADER = "x-creative-bot-version";
-const HOSTNAME_HEADER = "x-creative-bot-hostname";
+export class TelegramError extends Error {
+  constructor(
+    message: string,
+    public readonly errorCode?: number,
+  ) {
+    super(message);
+    this.name = "TelegramError";
+  }
+}
 
-export async function handleAgentApi(request: Request, env: Env, pathname: string): Promise<Response> {
-  if (request.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+export class TelegramClient {
+  private readonly baseUrl: string;
 
-  const token = bearerToken(request);
-  if (!token || token !== LOCAL_AGENT_TOKEN) {
-    return json({ ok: false, error: "Unauthorized" }, 401);
+  constructor(private readonly token: string) {
+    this.baseUrl = `https://api.telegram.org/bot${token}`;
   }
 
-  const now = Date.now();
-  const hostname = request.headers.get(HOSTNAME_HEADER) ?? undefined;
-  const appVersion = request.headers.get(APP_VERSION_HEADER) ?? undefined;
-  const agent: AgentRecord = {
-    id: LOCAL_AGENT_ID,
-    name: "Local desktop",
-    ...(hostname ? { hostname } : {}),
-    ...(appVersion ? { appVersion } : {}),
-    createdAt: now,
-    lastSeenAt: now,
-    disabled: false,
-  };
-
-  if (pathname === "/agent/status") {
-    const stats = await queueStub(env).stats();
-    return json({ ok: true, agent, stats: { ...stats, onlineAgents: 1 } });
-  }
-
-  if (pathname === "/agent/lease") {
-    const leased = await queueStub(env).leaseNext(LOCAL_AGENT_ID);
-    if (!leased) {
-      const stats = await queueStub(env).stats();
-      return json({ ok: true, job: null, stats: { ...stats, onlineAgents: 1 } });
-    }
-    await safeStatusEdit(env, leased.job, "⬇️ Скачиваю и публикую…");
-    const stats = await queueStub(env).stats();
-    return json({
-      ok: true,
-      job: leased.job,
-      leaseToken: leased.leaseToken,
-      telegramBotToken: telegramBotToken(env),
-      stats: { ...stats, onlineAgents: 1 },
+  async call<T>(method: string, payload: Record<string, unknown>): Promise<T> {
+    const response = await fetch(`${this.baseUrl}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
     });
-  }
 
-  const body = await readJson(request);
-  if (!body) return json({ ok: false, error: "Invalid JSON" }, 400);
-  const jobId = text(body.jobId, 120);
-  const leaseToken = text(body.leaseToken, 160);
-  if (!jobId || !leaseToken) return json({ ok: false, error: "jobId and leaseToken are required" }, 400);
+    let body: TelegramApiResponse<T>;
+    try {
+      body = (await response.json()) as TelegramApiResponse<T>;
+    } catch {
+      throw new TelegramError(`Telegram API returned invalid JSON for ${method}`);
+    }
 
-  if (pathname === "/agent/heartbeat") {
-    const job = await queueStub(env).heartbeat(LOCAL_AGENT_ID, jobId, leaseToken);
-    return job ? json({ ok: true, job }) : json({ ok: false, error: "Lease expired" }, 409);
-  }
-
-  if (pathname === "/agent/progress") {
-    const stage = text(body.stage, 40) as QueueStage;
-    const job = await queueStub(env).updateProgress(LOCAL_AGENT_ID, jobId, leaseToken, stage);
-    if (!job) return json({ ok: false, error: "Lease expired or invalid stage" }, 409);
-    await safeStatusEdit(env, job, statusText(stage));
-    return json({ ok: true, job });
-  }
-
-  if (pathname === "/agent/complete") {
-    const job = await queueStub(env).complete(LOCAL_AGENT_ID, jobId, leaseToken);
-    if (!job) return json({ ok: false, error: "Lease expired" }, 409);
-    await safeStatusEdit(env, job, "✅ Опубликовано.");
-    return json({ ok: true, job });
-  }
-
-  if (pathname === "/agent/fail") {
-    const error = text(body.error, 1200) || "Неизвестная ошибка локального приложения";
-    const publicError = text(body.publicError, 300) || "Не удалось обработать ссылку.";
-    const retryable = body.retryable === true;
-    const retryAfterSeconds = clampNumber(body.retryAfterSeconds, 30, 3600, 180);
-    const result = await queueStub(env).fail(
-      LOCAL_AGENT_ID,
-      jobId,
-      leaseToken,
-      error,
-      retryable,
-      retryAfterSeconds,
-    );
-    if (!result) return json({ ok: false, error: "Lease expired" }, 409);
-    if (result.willRetry) {
-      const minutes = Math.max(1, Math.ceil(retryAfterSeconds / 60));
-      await safeStatusEdit(
-        env,
-        result.job,
-        `⚠️ Временная ошибка. Повторю через ${minutes} мин.`,
+    if (!response.ok || !body.ok || body.result === undefined) {
+      throw new TelegramError(
+        body.description ?? `Telegram API request failed: ${method}`,
+        body.error_code ?? response.status,
       );
-    } else {
-      await safeStatusEdit(env, result.job, `❌ ${escapeHtml(publicError)}`);
     }
-    return json({ ok: true, job: result.job, willRetry: result.willRetry });
+
+    return body.result;
   }
 
-  return json({ ok: false, error: "Not found" }, 404);
-}
+  sendMessage(
+    chatId: string | number,
+    text: string,
+    extra: Record<string, unknown> = {},
+  ): Promise<TelegramMessage> {
+    return this.call<TelegramMessage>("sendMessage", {
+      chat_id: chatId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...extra,
+    });
+  }
 
-async function safeStatusEdit(env: Env, job: QueueJobRecord, message: string): Promise<void> {
-  const telegram = new TelegramClient(telegramBotToken(env));
-  try {
-    await telegram.editMessageText(job.sourceChatId, Number(job.statusMessageId), message);
-  } catch (error) {
-    console.error("status edit failed", {
-      jobId: job.id,
-      error: error instanceof Error ? error.message : String(error),
+  editMessageText(
+    chatId: string | number,
+    messageId: number,
+    text: string,
+    extra: Record<string, unknown> = {},
+  ): Promise<TelegramMessage | true> {
+    return this.call<TelegramMessage | true>("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...extra,
+    });
+  }
+
+  answerCallbackQuery(
+    callbackQueryId: string,
+    text?: string,
+    showAlert = false,
+  ): Promise<true> {
+    return this.call<true>("answerCallbackQuery", {
+      callback_query_id: callbackQueryId,
+      ...(text ? { text } : {}),
+      show_alert: showAlert,
+    });
+  }
+
+  getMe(): Promise<TelegramUser> {
+    return this.call<TelegramUser>("getMe", {});
+  }
+
+  getChat(chatId: string | number): Promise<TelegramChat> {
+    return this.call<TelegramChat>("getChat", { chat_id: chatId });
+  }
+
+  getChatMember(
+    chatId: string | number,
+    userId: string | number,
+  ): Promise<Record<string, unknown>> {
+    return this.call<Record<string, unknown>>("getChatMember", {
+      chat_id: chatId,
+      user_id: userId,
+    });
+  }
+
+  setWebhook(url: string, secretToken: string): Promise<true> {
+    return this.call<true>("setWebhook", {
+      url,
+      secret_token: secretToken,
+      allowed_updates: ["message", "callback_query"],
+      drop_pending_updates: false,
+      max_connections: 10,
+    });
+  }
+
+  setMyCommands(): Promise<true> {
+    return this.call<true>("setMyCommands", {
+      commands: [
+        { command: "start", description: "Открыть бота" },
+        { command: "claim", description: "Назначить владельца при первом запуске" },
+        { command: "settings", description: "Настройки (только владелец)" },
+        { command: "join", description: "Войти по приглашению" },
+        { command: "settarget", description: "Назначить текущую группу" },
+        { command: "queue", description: "Состояние очереди" },
+      ],
     });
   }
 }
 
-function statusText(stage: QueueStage): string {
-  switch (stage) {
-    case "starting":
-      return "⏳ Начинаю обработку…";
-    case "downloading":
-      return "⬇️ Скачиваю из Instagram…";
-    case "preparing":
-      return "🎞 Подготавливаю файлы…";
-    case "uploading":
-      return "📤 Публикую в Telegram…";
-    default:
-      return "⏳ Обрабатываю…";
-  }
+export function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
-async function readJson(request: Request): Promise<Record<string, unknown> | null> {
-  try {
-    const value = (await request.json()) as unknown;
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
+export function displayName(user: TelegramUser): string {
+  if (user.username) return `@${user.username}`;
+  return [user.first_name, user.last_name].filter(Boolean).join(" ");
 }
 
-function bearerToken(request: Request): string | null {
-  const value = request.headers.get("authorization") ?? "";
-  const match = value.match(/^Bearer\s+(.+)$/iu);
-  return match?.[1]?.trim() || null;
-}
-
-function text(value: unknown, maxLength: number): string {
-  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
-}
-
-function clampNumber(value: unknown, minimum: number, maximum: number, fallback: number): number {
-  const number = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(number) ? Math.max(minimum, Math.min(maximum, Math.round(number))) : fallback;
-}
-
-function json(body: unknown, status = 200): Response {
-  return Response.json(body, {
-    status,
-    headers: {
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-    },
-  });
+export function chatDisplayName(chat: TelegramChat): string {
+  if (chat.username) return `@${chat.username}`;
+  if (chat.title) return chat.title;
+  return [chat.first_name, chat.last_name].filter(Boolean).join(" ") || String(chat.id);
 }

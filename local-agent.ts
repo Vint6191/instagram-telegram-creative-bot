@@ -1,69 +1,84 @@
-interface KVNamespaceListKey<Metadata = unknown> {
-  name: string;
-  expiration?: number;
-  metadata?: Metadata;
-}
+import {
+  setupToken,
+  telegramBotToken,
+  telegramWebhookSecret,
+} from "./config";
+import { handleAgentApi } from "./agent-api";
+import { UpdateHandler } from "./handlers";
+import { JobQueue } from "./job-queue";
+import { ConfigStore } from "./store";
+import { TelegramClient } from "./telegram";
+import type { Env, TelegramUpdate } from "./types";
 
-interface KVNamespaceListResult<Metadata = unknown> {
-  keys: KVNamespaceListKey<Metadata>[];
-  list_complete: boolean;
-  cursor?: string;
-}
+export { JobQueue };
 
-interface KVNamespace {
-  get(key: string): Promise<string | null>;
-  get<T>(key: string, type: "json"): Promise<T | null>;
-  put(
-    key: string,
-    value: string | ArrayBuffer | ArrayBufferView | ReadableStream,
-    options?: { expiration?: number; expirationTtl?: number; metadata?: unknown },
-  ): Promise<void>;
-  delete(key: string): Promise<void>;
-  list<Metadata = unknown>(options?: {
-    prefix?: string;
-    limit?: number;
-    cursor?: string;
-  }): Promise<KVNamespaceListResult<Metadata>>;
-}
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
 
-interface ExecutionContext {
-  waitUntil(promise: Promise<unknown>): void;
-  passThroughOnException(): void;
-}
+    if (request.method === "GET" && url.pathname === "/health") {
+      const stats = await env.QUEUE.getByName("instagram-creative-global-queue").stats();
+      return Response.json(
+        { ok: true, mode: "local-desktop-queue", queue: stats },
+        { headers: { "cache-control": "no-store" } },
+      );
+    }
 
-interface ExportedHandler<Env = unknown> {
-  fetch?(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response>;
-}
+    if (request.method === "POST" && url.pathname === "/admin/setup") {
+      return setupBot(request, env, url.origin);
+    }
 
-interface SqlStorageCursor<T> extends Iterable<T> {
-  toArray(): T[];
-  one(): T;
-}
+    if (url.pathname.startsWith("/agent/")) {
+      return handleAgentApi(request, env, url.pathname);
+    }
 
-interface DurableObjectSqlStorage {
-  exec<T = Record<string, unknown>>(
-    query: string,
-    ...bindings: unknown[]
-  ): SqlStorageCursor<T>;
-}
+    if (request.method === "POST" && url.pathname === "/telegram/webhook") {
+      const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+      if (!secret || secret !== telegramWebhookSecret(env)) {
+        return new Response("Unauthorized", { status: 401 });
+      }
 
-interface DurableObjectStorage {
-  sql: DurableObjectSqlStorage;
-}
+      let update: TelegramUpdate;
+      try {
+        update = (await request.json()) as TelegramUpdate;
+      } catch {
+        return new Response("Bad Request", { status: 400 });
+      }
 
-interface DurableObjectState {
-  storage: DurableObjectStorage;
-  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
-}
+      const handler = new UpdateHandler(env);
+      ctx.waitUntil(
+        handler.handle(update).catch((error) => {
+          console.error("unhandled update error", error);
+        }),
+      );
+      return new Response("OK");
+    }
 
-interface DurableObjectNamespace<T = unknown> {
-  getByName(name: string): T;
-}
+    return new Response("Not Found", { status: 404 });
+  },
+} satisfies ExportedHandler<Env>;
 
-declare module "cloudflare:workers" {
-  export class DurableObject<Env = unknown> {
-    protected readonly ctx: DurableObjectState;
-    protected readonly env: Env;
-    constructor(ctx: DurableObjectState, env: Env);
+async function setupBot(request: Request, env: Env, origin: string): Promise<Response> {
+  const authorization = request.headers.get("authorization");
+  if (authorization !== `Bearer ${setupToken(env)}`) {
+    return new Response("Unauthorized", { status: 401 });
   }
+
+  const telegram = new TelegramClient(telegramBotToken(env));
+  const bot = await telegram.getMe();
+  await telegram.setWebhook(`${origin}/telegram/webhook`, telegramWebhookSecret(env));
+  await telegram.setMyCommands();
+
+  const store = new ConfigStore(env.CONFIG, env.ROOT_ADMIN_ID);
+  await store.setBotIdentity({
+    id: String(bot.id),
+    ...(bot.username ? { username: bot.username } : {}),
+  });
+
+  return Response.json({
+    ok: true,
+    bot: bot.username ? `@${bot.username}` : String(bot.id),
+    webhook: `${origin}/telegram/webhook`,
+    mode: "local-desktop-queue",
+  });
 }

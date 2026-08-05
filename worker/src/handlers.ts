@@ -348,11 +348,20 @@ export class UpdateHandler {
         statusMessageId: String(status.message_id),
         targetChatId: target.chatId,
       });
-      const duplicate = result.duplicate ? "\nЭта ссылка из сообщения уже была добавлена." : "";
+      let statusText: string;
+      if (!result.duplicate) {
+        statusText = `✅ В очереди · <b>${result.position}</b>`;
+      } else if (result.job.status === "completed") {
+        statusText = "✅ Этот пост уже опубликован.";
+      } else if (result.job.status === "leased") {
+        statusText = "⏳ Этот пост уже обрабатывается.";
+      } else {
+        statusText = `🕓 Этот пост уже в очереди${result.position ? ` · <b>${result.position}</b>` : ""}.`;
+      }
       await this.telegram.editMessageText(
         message.chat.id,
         status.message_id,
-        `✅ В очереди · <b>${result.position}</b>${duplicate}`,
+        statusText,
       );
     } catch (error) {
       console.error("queue enqueue failed", safeError(error));

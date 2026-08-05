@@ -105,7 +105,33 @@ export class JobQueue extends DurableObject<Env> {
     if (existing) {
       return {
         job: mapJob(existing),
-        position: this.positionFor(existing.id, existing.created_at),
+        position: existing.status === "queued"
+          ? this.positionFor(existing.id, existing.created_at)
+          : 0,
+        duplicate: true,
+      };
+    }
+
+    // A new Telegram message with the same canonical Instagram URL used to
+    // create a second job and publish the same Reel twice. Deduplicate active
+    // and recently completed jobs per destination. Failed jobs are excluded so
+    // the user can explicitly retry them with a new message.
+    const sameUrl = this.ctx.storage.sql
+      .exec<JobRow>(
+        `SELECT * FROM jobs
+         WHERE url = ? AND target_chat_id = ?
+           AND status IN ('queued', 'leased', 'completed')
+         ORDER BY created_at DESC LIMIT 1`,
+        input.url,
+        input.targetChatId,
+      )
+      .toArray()[0];
+    if (sameUrl) {
+      return {
+        job: mapJob(sameUrl),
+        position: sameUrl.status === "queued"
+          ? this.positionFor(sameUrl.id, sameUrl.created_at)
+          : 0,
         duplicate: true,
       };
     }

@@ -1,0 +1,89 @@
+name: Process Instagram creative
+
+run-name: "Instagram creative · ${{ inputs.request_id }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Canonical Instagram URL
+        required: true
+        type: string
+      requester_id:
+        description: Telegram user ID that submitted the link
+        required: true
+        type: string
+      source_chat_id:
+        description: Telegram chat containing the status message
+        required: true
+        type: string
+      status_message_id:
+        description: Telegram status message ID
+        required: true
+        type: string
+      target_chat_id:
+        description: Telegram destination chat ID snapshot
+        required: true
+        type: string
+      request_id:
+        description: Unique request ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Один Instagram-сеанс за раз. Это бережёт cookies и снижает шанс rate limit.
+concurrency:
+  group: instagram-creative-session
+  cancel-in-progress: false
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: downloader/pyproject.toml
+
+      - name: Install FFmpeg
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+
+      - name: Install downloader
+        run: python -m pip install --upgrade ./downloader
+
+      - name: Download and publish
+        id: publish
+        env:
+          TELEGRAM_BOT_TOKEN: "7799844807:AAFifrOxeI2OKgLfjQph2y5hCXFbGLs2HSI"
+          INSTAGRAM_COOKIES_B64: ${{ secrets.INSTAGRAM_COOKIES_B64 }}
+          INSTAGRAM_URL: ${{ inputs.url }}
+          SOURCE_CHAT_ID: ${{ inputs.source_chat_id }}
+          STATUS_MESSAGE_ID: ${{ inputs.status_message_id }}
+          TARGET_CHAT_ID: ${{ inputs.target_chat_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          STATUS_MARKER: /tmp/creative-bot-status-reported
+          PYTHONUNBUFFERED: "1"
+        run: creative-bot-run
+
+      - name: Report bootstrap failure to Telegram
+        if: ${{ failure() }}
+        env:
+          TELEGRAM_BOT_TOKEN: "7799844807:AAFifrOxeI2OKgLfjQph2y5hCXFbGLs2HSI"
+          SOURCE_CHAT_ID: ${{ inputs.source_chat_id }}
+          STATUS_MESSAGE_ID: ${{ inputs.status_message_id }}
+          STATUS_MARKER: /tmp/creative-bot-status-reported
+        run: python scripts/report-action-failure.py

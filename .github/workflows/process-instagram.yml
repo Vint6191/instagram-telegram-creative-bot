@@ -39,7 +39,7 @@ concurrency:
 
 jobs:
   process:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, creative-bot]
     timeout-minutes: 20
 
     steps:
@@ -53,85 +53,46 @@ jobs:
           cache: pip
           cache-dependency-path: downloader/pyproject.toml
 
-      - name: Install FFmpeg
-        shell: bash
+      - name: Verify local runtime
+        shell: powershell
         run: |
-          if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y ffmpeg
-          fi
-
-      - name: Install downloader
-        run: python -m pip install --upgrade ./downloader
-
-      - name: Prepare Instagram cookies
-        env:
-          WORKER_GITHUB_TOKEN: ${{ secrets.WORKER_GITHUB_TOKEN }}
-          ENCRYPTED_COOKIE_PAYLOAD_B64: "ewogICJ2ZXJzaW9uIjogMSwKICAiYWxnb3JpdGhtIjogIkFFUy0yNTYtR0NNIiwKICAiY29udGV4dCI6ICJpbnN0YWdyYW0tY3JlYXRpdmUtYm90L2xvY2FsLWNvb2tpZXMvdjEiLAogICJpdkJhc2U2NCI6ICJ4dnhVdE5HbUJ5VXplUGhNIiwKICAiY2lwaGVydGV4dEJhc2U2NCI6ICJod0Nhc24wMHYvMWpTNUJ0Rkl5ckpvalNvQmFQUC82TzE3WjcwWnR6Q0grdTZWZ29SSGFlbCtRcUNHNERxZldJQ2ZJVHExUHAvWkJHeEtqS01GSG5yRGFNM3RkVm5rQjl2SkppSmM1ck1MTmtZZ3YrN1E1M3JxZVBqWm90QmZlaGZWek5UekhaWHZ4Mmc4TmhJM1BiY090UnhJZnhDWWVpdU5IZVlGU2l1MnBEUlFaQU8wVmVQT2dmTTRCV2lzd3hqN1U4VU43ZFBpYUMwZ2NBN1BQZkRXaGZySERtTHlpU0pla1ZmRGlzSzNBWjAzZHljT0tlVElnVks5YTVuTlptTTc5NktkRzBZcjZKZDNpcmY2VjlsTnA1Q3VmQ3BNZ2l2b1E2VGRTaGRHNmNGWDhLNWJNc0VObjRqSzJyZlljcndyUUdCRklHWDVGNDR5NWxYS0ZOVkJyNno0b2ZobUF4RGFZV0xKeHpFa3ZGT0lrWjJncGZsdUNvN3NkcnZwcXRseXcyWFc1WEEzdWlyVUJmczhCMDBVY2txbVhIRUJHaU1KY3c5Z1lPMjE2WnF1Q2ptZ3FFQmcva25YWXNWZ05TOG0yb2ZTOUZaQmJNbXFxcVJEdmlYTHMybFp0MUJBN2dMcXBycUoxNXN0WWpqVmszZlRhakd1VmRoYkZKbEt5REo4Wkx0QWtuQW1sdkJ2VTRVSmVGa2t2OHVHRE1TOGpPN1J2VzJMMlR2cUQvbWh2VkRleEVqbEcyMVhFcXdZeHd6b1hVUlhnOEZVVkdkUzFuL202TnRjWHRpVVlTdlZCVjJFVFJUMFMxZUx3MUd2WlU3WXNOQVRHY29tRjEzZ3QrTmlUN0xJcHhTMDJ5YWs0M2VURmpwVVZFNjNtNTJ2V21pSG9pOEVrNFp2YTZ1WDYzcmtyYnU1OXJEM3hoUThMMXlDcmNMOUZuOHZCeGpJcS9PYjNYb1JPZE81dXo0Z045bTdDUHFLYlNVVmo4TnFhOTZtaGhRZzBCN0dlcHdDdzJ6MHFzaHFxTXdSbWtHeFJYU29CTGVjWTU3WHJ6Rm52M2YvT2V0c3FsZEJOa28rd0xoREVKZjNWZnB5ODNjUEJxS2V3Szl2Y1VYdWM0SzBQak1CSndkSzRaTmRHSk9NUzlJWHRjaWpoajRWQ0dXMWxPUFU2ckh3ZzNrSStpaDEzQjVteUc5QmZNV0UxQ21FSmdGeThiVW13RVBNYkZZVVc4dWpsc3RBYVcwSDdWOUpXQllQUjhUUVRsTzhqcmRZWGFKa0JMSGdGYmMyY2V6NFZaVTNLRmt2dW1aWE1Kcll2Zjl2YlZmNlNVYTcrOGxvazBrT0lOQkJsMzNLUGJLMlA3cldhWStja1k5c1lsaUlIT2h1ay9ScGpRWWIrNHhXeHRhQUphaGQ5L2JWZFo2TWE4VzF0RVkwb3hQUHpaKzlneXRoaTBmVlpoQXU2d1V4RFBRWnRBMU9DMGxtdDJPczViZWlRY3hOc1MwN00wUk1CZFI0Sm10dmZKdVJJWWhmRzcvaGZMeEs1SU1zMDBGbUF6d3g5bTlsWDhMK3NIZGlCcE1IRHVVcHlyVWk1bUtvNE5ZZG9XTlE9PSIsCiAgImF1dGhUYWdCYXNlNjQiOiAidnkzQ3VhWkxrSmh4WHFTMmpqb3BZQT09IiwKICAiY29va2llQ291bnQiOiAxMQp9Cg=="
-        shell: bash
-        run: |
-          set -euo pipefail
-          node <<'NODE'
-          const { createDecipheriv, createHash } = require("node:crypto");
-          const { chmodSync, writeFileSync } = require("node:fs");
-          const { join } = require("node:path");
-
-          const token = (process.env.WORKER_GITHUB_TOKEN || "").trim();
-          if (!token) throw new Error("Missing WORKER_GITHUB_TOKEN");
-
-          const payload = JSON.parse(
-            Buffer.from(process.env.ENCRYPTED_COOKIE_PAYLOAD_B64, "base64").toString("utf8")
-          );
-          const key = createHash("sha256")
-            .update(payload.context, "utf8")
-            .update("\0", "utf8")
-            .update(token, "utf8")
-            .digest();
-
-          const decipher = createDecipheriv(
-            "aes-256-gcm",
-            key,
-            Buffer.from(payload.ivBase64, "base64")
-          );
-          decipher.setAAD(Buffer.from(payload.context, "utf8"));
-          decipher.setAuthTag(Buffer.from(payload.authTagBase64, "base64"));
-
-          const cookies = Buffer.concat([
-            decipher.update(Buffer.from(payload.ciphertextBase64, "base64")),
-            decipher.final(),
-          ]).toString("utf8");
-
-          for (const required of ["sessionid", "csrftoken", "ds_user_id"]) {
-            if (!cookies.includes(`\t${required}\t`)) {
-              throw new Error(`Instagram cookies are missing ${required}`);
-            }
+          $cookies = 'C:\CreativeBotRunner\secrets\instagram-cookies.txt'
+          if (-not (Test-Path $cookies)) {
+            throw "Local Instagram cookies file is missing: $cookies"
+          }
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            throw "FFmpeg is missing. Run the local runner installer again."
+          }
+          if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
+            throw "FFprobe is missing. Run the local runner installer again."
           }
 
-          const output = join(process.env.RUNNER_TEMP, "instagram-cookies.txt");
-          writeFileSync(output, cookies, { encoding: "utf8", mode: 0o600 });
-          chmodSync(output, 0o600);
-          console.log("Instagram cookies prepared.");
-          NODE
+      - name: Install downloader
+        shell: powershell
+        run: python -m pip install --upgrade ./downloader
 
       - name: Download and publish
         id: publish
+        shell: powershell
         env:
           TELEGRAM_BOT_TOKEN: "7799844807:AAFBznwweXnHg9RIO_vwVlfNYtzkJSEf6UE"
-          INSTAGRAM_COOKIES_FILE: ${{ runner.temp }}/instagram-cookies.txt
+          INSTAGRAM_COOKIES_FILE: 'C:\CreativeBotRunner\secrets\instagram-cookies.txt'
+          INSTAGRAM_COOKIES_FROM_BROWSER: chrome
           INSTAGRAM_URL: ${{ inputs.url }}
           SOURCE_CHAT_ID: ${{ inputs.source_chat_id }}
           STATUS_MESSAGE_ID: ${{ inputs.status_message_id }}
           TARGET_CHAT_ID: ${{ inputs.target_chat_id }}
           REQUEST_ID: ${{ inputs.request_id }}
-          STATUS_MARKER: /tmp/creative-bot-status-reported
+          STATUS_MARKER: ${{ runner.temp }}\creative-bot-status-reported
           PYTHONUNBUFFERED: "1"
         run: creative-bot-run
 
       - name: Report bootstrap failure to Telegram
         if: ${{ failure() }}
+        shell: powershell
         env:
           TELEGRAM_BOT_TOKEN: "7799844807:AAFBznwweXnHg9RIO_vwVlfNYtzkJSEf6UE"
           SOURCE_CHAT_ID: ${{ inputs.source_chat_id }}
           STATUS_MESSAGE_ID: ${{ inputs.status_message_id }}
-          STATUS_MARKER: /tmp/creative-bot-status-reported
+          STATUS_MARKER: ${{ runner.temp }}\creative-bot-status-reported
         run: python scripts/report-action-failure.py

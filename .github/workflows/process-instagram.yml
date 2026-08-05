@@ -68,7 +68,7 @@ jobs:
       - name: Download and publish
         id: publish
         env:
-          TELEGRAM_BOT_TOKEN: "7799844807:AAFifrOxeI2OKgLfjQph2y5hCXFbGLs2HSI"
+          TELEGRAM_BOT_TOKEN: "7799844807:AAFBznwweXnHg9RIO_vwVlfNYtzkJSEf6UE"
           INSTAGRAM_COOKIES_B64: ${{ secrets.INSTAGRAM_COOKIES_B64 }}
           INSTAGRAM_URL: ${{ inputs.url }}
           SOURCE_CHAT_ID: ${{ inputs.source_chat_id }}
@@ -82,7 +82,7 @@ jobs:
       - name: Report bootstrap failure to Telegram
         if: ${{ failure() }}
         env:
-          TELEGRAM_BOT_TOKEN: "7799844807:AAFifrOxeI2OKgLfjQph2y5hCXFbGLs2HSI"
+          TELEGRAM_BOT_TOKEN: "7799844807:AAFBznwweXnHg9RIO_vwVlfNYtzkJSEf6UE"
           SOURCE_CHAT_ID: ${{ inputs.source_chat_id }}
           STATUS_MESSAGE_ID: ${{ inputs.status_message_id }}
           STATUS_MARKER: /tmp/creative-bot-status-reported

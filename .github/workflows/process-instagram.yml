@@ -1,98 +1,15 @@
-name: Process Instagram creative
-
-run-name: "Instagram creative · ${{ inputs.request_id }}"
+name: Legacy Instagram processor (disabled)
 
 on:
   workflow_dispatch:
-    inputs:
-      url:
-        description: Canonical Instagram URL
-        required: true
-        type: string
-      requester_id:
-        description: Telegram user ID that submitted the link
-        required: true
-        type: string
-      source_chat_id:
-        description: Telegram chat containing the status message
-        required: true
-        type: string
-      status_message_id:
-        description: Telegram status message ID
-        required: true
-        type: string
-      target_chat_id:
-        description: Telegram destination chat ID snapshot
-        required: true
-        type: string
-      request_id:
-        description: Unique request ID
-        required: true
-        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: instagram-creative-session
-  cancel-in-progress: false
-
 jobs:
-  process:
-    runs-on: [self-hosted, Windows, X64, creative-bot]
-    timeout-minutes: 20
-
+  disabled:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: downloader/pyproject.toml
-
-      - name: Verify local runtime
-        shell: powershell
-        run: |
-          $cookies = 'C:\CreativeBotRunner\secrets\instagram-cookies.txt'
-          if (-not (Test-Path $cookies)) {
-            throw "Local Instagram cookies file is missing: $cookies"
-          }
-          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-            throw "FFmpeg is missing. Run the local runner installer again."
-          }
-          if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
-            throw "FFprobe is missing. Run the local runner installer again."
-          }
-
-      - name: Install downloader
-        shell: powershell
-        run: python -m pip install --upgrade ./downloader
-
-      - name: Download and publish
-        id: publish
-        shell: powershell
-        env:
-          TELEGRAM_BOT_TOKEN: "7799844807:AAFBznwweXnHg9RIO_vwVlfNYtzkJSEf6UE"
-          INSTAGRAM_COOKIES_FILE: 'C:\CreativeBotRunner\secrets\instagram-cookies.txt'
-          INSTAGRAM_COOKIES_FROM_BROWSER: chrome
-          INSTAGRAM_URL: ${{ inputs.url }}
-          SOURCE_CHAT_ID: ${{ inputs.source_chat_id }}
-          STATUS_MESSAGE_ID: ${{ inputs.status_message_id }}
-          TARGET_CHAT_ID: ${{ inputs.target_chat_id }}
-          REQUEST_ID: ${{ inputs.request_id }}
-          STATUS_MARKER: ${{ runner.temp }}\creative-bot-status-reported
-          PYTHONUNBUFFERED: "1"
-        run: creative-bot-run
-
-      - name: Report bootstrap failure to Telegram
-        if: ${{ failure() }}
-        shell: powershell
-        env:
-          TELEGRAM_BOT_TOKEN: "7799844807:AAFBznwweXnHg9RIO_vwVlfNYtzkJSEf6UE"
-          SOURCE_CHAT_ID: ${{ inputs.source_chat_id }}
-          STATUS_MESSAGE_ID: ${{ inputs.status_message_id }}
-          STATUS_MARKER: ${{ runner.temp }}\creative-bot-status-reported
-        run: python scripts/report-action-failure.py
+      - run: |
+          echo "Instagram processing moved to the local Windows application."
+          echo "This workflow is intentionally disabled and does not download anything."

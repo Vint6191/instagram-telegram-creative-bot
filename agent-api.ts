@@ -1,150 +1,205 @@
-import type {
-  TelegramApiResponse,
-  TelegramChat,
-  TelegramMessage,
-  TelegramUser,
-} from "./types";
+import type { JobQueue } from "./job-queue";
 
-export class TelegramError extends Error {
-  constructor(
-    message: string,
-    public readonly errorCode?: number,
-  ) {
-    super(message);
-    this.name = "TelegramError";
-  }
+export interface Env {
+  CONFIG: KVNamespace;
+  QUEUE: DurableObjectNamespace<JobQueue>;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
+  ROOT_ADMIN_ID?: string;
+  ADMIN_CLAIM_CODE?: string;
+  SETUP_TOKEN?: string;
+  // Legacy optional fields kept so old repository files can remain harmless.
+  GITHUB_OWNER?: string;
+  GITHUB_REPO?: string;
+  GITHUB_REF?: string;
+  GITHUB_WORKFLOW?: string;
+  GITHUB_TOKEN?: string;
 }
 
-export class TelegramClient {
-  private readonly baseUrl: string;
+export type ChatType = "private" | "group" | "supergroup" | "channel";
 
-  constructor(private readonly token: string) {
-    this.baseUrl = `https://api.telegram.org/bot${token}`;
-  }
-
-  async call<T>(method: string, payload: Record<string, unknown>): Promise<T> {
-    const response = await fetch(`${this.baseUrl}/${method}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    let body: TelegramApiResponse<T>;
-    try {
-      body = (await response.json()) as TelegramApiResponse<T>;
-    } catch {
-      throw new TelegramError(`Telegram API returned invalid JSON for ${method}`);
-    }
-
-    if (!response.ok || !body.ok || body.result === undefined) {
-      throw new TelegramError(
-        body.description ?? `Telegram API request failed: ${method}`,
-        body.error_code ?? response.status,
-      );
-    }
-
-    return body.result;
-  }
-
-  sendMessage(
-    chatId: string | number,
-    text: string,
-    extra: Record<string, unknown> = {},
-  ): Promise<TelegramMessage> {
-    return this.call<TelegramMessage>("sendMessage", {
-      chat_id: chatId,
-      text,
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      ...extra,
-    });
-  }
-
-  editMessageText(
-    chatId: string | number,
-    messageId: number,
-    text: string,
-    extra: Record<string, unknown> = {},
-  ): Promise<TelegramMessage | true> {
-    return this.call<TelegramMessage | true>("editMessageText", {
-      chat_id: chatId,
-      message_id: messageId,
-      text,
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      ...extra,
-    });
-  }
-
-  answerCallbackQuery(
-    callbackQueryId: string,
-    text?: string,
-    showAlert = false,
-  ): Promise<true> {
-    return this.call<true>("answerCallbackQuery", {
-      callback_query_id: callbackQueryId,
-      ...(text ? { text } : {}),
-      show_alert: showAlert,
-    });
-  }
-
-  getMe(): Promise<TelegramUser> {
-    return this.call<TelegramUser>("getMe", {});
-  }
-
-  getChat(chatId: string | number): Promise<TelegramChat> {
-    return this.call<TelegramChat>("getChat", { chat_id: chatId });
-  }
-
-  getChatMember(
-    chatId: string | number,
-    userId: string | number,
-  ): Promise<Record<string, unknown>> {
-    return this.call<Record<string, unknown>>("getChatMember", {
-      chat_id: chatId,
-      user_id: userId,
-    });
-  }
-
-  setWebhook(url: string, secretToken: string): Promise<true> {
-    return this.call<true>("setWebhook", {
-      url,
-      secret_token: secretToken,
-      allowed_updates: ["message", "callback_query"],
-      drop_pending_updates: false,
-      max_connections: 10,
-    });
-  }
-
-  setMyCommands(): Promise<true> {
-    return this.call<true>("setMyCommands", {
-      commands: [
-        { command: "start", description: "Открыть бота" },
-        { command: "claim", description: "Назначить владельца при первом запуске" },
-        { command: "settings", description: "Настройки (только владелец)" },
-        { command: "join", description: "Войти по приглашению" },
-        { command: "settarget", description: "Назначить текущую группу" },
-        { command: "queue", description: "Состояние очереди" },
-      ],
-    });
-  }
+export interface TelegramUser {
+  id: number;
+  is_bot?: boolean;
+  first_name: string;
+  last_name?: string;
+  username?: string;
 }
 
-export function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+export interface TelegramChat {
+  id: number;
+  type: ChatType;
+  title?: string;
+  username?: string;
+  first_name?: string;
+  last_name?: string;
 }
 
-export function displayName(user: TelegramUser): string {
-  if (user.username) return `@${user.username}`;
-  return [user.first_name, user.last_name].filter(Boolean).join(" ");
+export interface MessageOriginChat {
+  type: "chat";
+  date: number;
+  sender_chat: TelegramChat;
+  author_signature?: string;
 }
 
-export function chatDisplayName(chat: TelegramChat): string {
-  if (chat.username) return `@${chat.username}`;
-  if (chat.title) return chat.title;
-  return [chat.first_name, chat.last_name].filter(Boolean).join(" ") || String(chat.id);
+export interface MessageOriginChannel {
+  type: "channel";
+  date: number;
+  chat: TelegramChat;
+  message_id: number;
+  author_signature?: string;
+}
+
+export interface MessageOriginUser {
+  type: "user";
+  date: number;
+  sender_user: TelegramUser;
+}
+
+export interface MessageOriginHiddenUser {
+  type: "hidden_user";
+  date: number;
+  sender_user_name: string;
+}
+
+export type MessageOrigin =
+  | MessageOriginChat
+  | MessageOriginChannel
+  | MessageOriginUser
+  | MessageOriginHiddenUser;
+
+export interface TelegramMessage {
+  message_id: number;
+  from?: TelegramUser;
+  sender_chat?: TelegramChat;
+  chat: TelegramChat;
+  date: number;
+  text?: string;
+  caption?: string;
+  forward_origin?: MessageOrigin;
+  reply_to_message?: TelegramMessage;
+}
+
+export interface CallbackQuery {
+  id: string;
+  from: TelegramUser;
+  message?: TelegramMessage;
+  data?: string;
+}
+
+export interface TelegramUpdate {
+  update_id: number;
+  message?: TelegramMessage;
+  callback_query?: CallbackQuery;
+}
+
+export interface TelegramApiResponse<T> {
+  ok: boolean;
+  result?: T;
+  description?: string;
+  error_code?: number;
+  parameters?: { retry_after?: number };
+}
+
+export interface AuthorizedUserRecord {
+  id: string;
+  username?: string;
+  firstName: string;
+  lastName?: string;
+  addedAt: string;
+  addedBy: string;
+}
+
+export interface InviteRecord {
+  token: string;
+  createdAt: string;
+  createdBy: string;
+  expiresAt: string;
+}
+
+export interface TargetRecord {
+  chatId: string;
+  type: ChatType;
+  title: string;
+  username?: string;
+  configuredAt: string;
+  configuredBy: string;
+}
+
+export interface GitHubDispatchInputs {
+  url: string;
+  requester_id: string;
+  source_chat_id: string;
+  status_message_id: string;
+  target_chat_id: string;
+  request_id: string;
+}
+
+export interface QueueJobInput {
+  requestKey: string;
+  url: string;
+  requesterId: string;
+  requesterName: string;
+  sourceChatId: string;
+  sourceMessageId: string;
+  statusMessageId: string;
+  targetChatId: string;
+}
+
+export type QueueJobStatus = "queued" | "leased" | "completed" | "failed" | "cancelled";
+export type QueueStage =
+  | "queued"
+  | "starting"
+  | "downloading"
+  | "preparing"
+  | "uploading"
+  | "completed"
+  | "failed";
+
+export interface QueueJobRecord {
+  id: string;
+  requestKey: string;
+  url: string;
+  requesterId: string;
+  requesterName: string;
+  sourceChatId: string;
+  sourceMessageId: string;
+  statusMessageId: string;
+  targetChatId: string;
+  status: QueueJobStatus;
+  stage: QueueStage;
+  createdAt: number;
+  updatedAt: number;
+  availableAt: number;
+  attemptCount: number;
+  maxAttempts: number;
+  leaseOwner?: string;
+  leaseToken?: string;
+  leaseExpiresAt?: number;
+  lastError?: string;
+  completedAt?: number;
+}
+
+export interface LeasedJob {
+  job: QueueJobRecord;
+  leaseToken: string;
+}
+
+export interface QueueStats {
+  queued: number;
+  working: number;
+  completedToday: number;
+  failedToday: number;
+  onlineAgents: number;
+  oldestQueuedAt?: number;
+}
+
+export interface AgentRecord {
+  id: string;
+  name: string;
+  hostname?: string;
+  appVersion?: string;
+  createdAt: number;
+  lastSeenAt: number;
+  disabled: boolean;
 }

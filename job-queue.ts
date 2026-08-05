@@ -25,7 +25,6 @@ const CALLBACK = {
   TARGET: "settings:target",
   INVITE: "users:invite",
   CLEAR_TARGET: "target:clear",
-  DEVICE: "settings:device",
   QUEUE: "settings:queue",
 } as const;
 
@@ -173,15 +172,6 @@ export class UpdateHandler {
           `❌ ${escapeHtml(reason)}`,
         );
       }
-      return;
-    }
-
-    if (name === "device") {
-      if (!(await this.store.isRootAdmin(user.id))) {
-        await this.telegram.sendMessage(message.chat.id, "Эта команда доступна только владельцу бота.");
-        return;
-      }
-      await this.sendDeviceCode(message.chat.id, user.id);
       return;
     }
 
@@ -405,14 +395,6 @@ export class UpdateHandler {
           "<b>Куда публиковать</b>\n\nДля группы: добавь бота и отправь в ней <code>/settarget</code>.\n\nДля канала: назначь бота администратором с правом публикации и перешли сюда любой пост из канала.",
           { reply_markup: backKeyboard() },
         );
-      } else if (data === CALLBACK.DEVICE) {
-        const pairing = await queueStub(this.env).createPairCode(String(query.from.id));
-        await this.telegram.editMessageText(
-          chatId,
-          messageId,
-          devicePairingText(pairing.code, pairing.expiresAt),
-          { reply_markup: backKeyboard() },
-        );
       } else if (data === CALLBACK.QUEUE) {
         const stats = await queueStub(this.env).stats();
         await this.telegram.editMessageText(
@@ -507,11 +489,6 @@ export class UpdateHandler {
     );
   }
 
-  private async sendDeviceCode(chatId: string | number, adminId: string | number): Promise<void> {
-    const pairing = await queueStub(this.env).createPairCode(String(adminId));
-    await this.telegram.sendMessage(chatId, devicePairingText(pairing.code, pairing.expiresAt));
-  }
-
   private async sendQueueStatus(chatId: string | number): Promise<void> {
     const stats = await queueStub(this.env).stats();
     await this.telegram.sendMessage(chatId, queueStatusText(stats));
@@ -594,10 +571,7 @@ function settingsKeyboard(hasTarget: boolean): Record<string, unknown> {
       { text: "👥 Пользователи", callback_data: CALLBACK.USERS },
       { text: "📣 Куда публиковать", callback_data: CALLBACK.TARGET },
     ],
-    [
-      { text: "🖥 Подключить компьютер", callback_data: CALLBACK.DEVICE },
-      { text: "📋 Очередь", callback_data: CALLBACK.QUEUE },
-    ],
+    [{ text: "📋 Очередь", callback_data: CALLBACK.QUEUE }],
   ];
   if (hasTarget) {
     rows.push([{ text: "Сбросить место публикации", callback_data: CALLBACK.CLEAR_TARGET }]);
@@ -635,18 +609,6 @@ function usersKeyboard(users: Array<{ id: string; username?: string; firstName: 
 
 function backKeyboard(): Record<string, unknown> {
   return { inline_keyboard: [[{ text: "← Назад", callback_data: CALLBACK.HOME }]] };
-}
-
-function devicePairingText(code: string, expiresAt: number): string {
-  const minutes = Math.max(1, Math.ceil((expiresAt - Date.now()) / 60_000));
-  return [
-    "<b>Подключение локального приложения</b>",
-    "",
-    `Код: <code>${escapeHtml(code)}</code>`,
-    "",
-    `Введи его в приложении на компьютере. Код одноразовый и действует ${minutes} мин.`,
-    "После подключения GitHub Actions и self-hosted runner больше не нужны.",
-  ].join("\n");
 }
 
 function queueStatusText(stats: { queued: number; working: number; completedToday: number; failedToday: number; onlineAgents: number; oldestQueuedAt?: number }): string {

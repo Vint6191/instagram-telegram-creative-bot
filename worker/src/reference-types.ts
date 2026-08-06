@@ -1,32 +1,18 @@
-export interface ReferenceNicheRecord {
-  slug: string;
-  title: string;
-  active: boolean;
-  catalogPresent: boolean;
-  thumbnailUrl?: string;
-  modelCount: number;
-  mediaCount: number;
-  lastScannedAt?: number;
-  nextScanAt: number;
-}
-
-export interface ReferenceModelRecord {
+export interface ReferenceGroupRecord {
   chatId: string;
   name: string;
   active: boolean;
   nicheCount: number;
-  deliveryCount: number;
+  sentCount: number;
+  pendingCount: number;
   niches: string[];
 }
 
-export interface ReferenceCatalogLease {
-  leaseToken: string;
-}
-
-export interface ReferenceCatalogItem {
-  slug: string;
+export interface ReferenceCategoryRecord {
+  key: string;
   title: string;
-  thumbnailUrl?: string;
+  count: number;
+  selectedCount: number;
 }
 
 export interface ReferenceDiscoveredItem {
@@ -35,7 +21,7 @@ export interface ReferenceDiscoveredItem {
   downloadUrl?: string;
   description?: string;
   hashtags?: string[];
-  niches?: Array<{ slug: string; title: string; thumbnailUrl?: string }>;
+  niches?: Array<{ slug: string; title?: string }>;
   author?: string;
   views?: number;
   likes?: number;
@@ -49,7 +35,7 @@ export interface ReferenceUploadTask {
   downloadUrl?: string;
   description?: string;
   hashtags: string[];
-  niches: Array<{ slug: string; title: string; thumbnailUrl?: string }>;
+  niches: Array<{ slug: string; title: string }>;
   author?: string;
   views?: number;
   likes?: number;
@@ -69,30 +55,25 @@ export interface ReferenceScanLease {
 export interface ReferenceDeliveryLease {
   id: string;
   leaseToken: string;
-  modelChatId: string;
-  modelName: string;
+  groupChatId: string;
+  groupName: string;
   mediaId: string;
-  fileId: string;
-  warehouseChatId?: string;
-  warehouseMessageId?: string;
-  sourceUrl: string;
-  description?: string;
-  hashtags: string[];
-  niches: Array<{ slug: string; title: string; thumbnailUrl?: string }>;
-  views?: number;
-  likes?: number;
-  duration?: number;
+  warehouseChatId: string;
+  warehouseMessageId: string;
 }
 
 export interface ReferenceStats {
-  models: number;
-  activeNiches: number;
+  enabled: boolean;
+  groups: number;
+  activeGroups: number;
   catalogNiches: number;
-  catalogPending: boolean;
-  catalogSyncedAt?: number;
-  catalogError?: string;
+  catalogVersion: string;
   storedMedia: number;
   pendingUploads: number;
   pendingDeliveries: number;
   sentDeliveries: number;
+  failedNiches: number;
+  failedUploads: number;
+  failedDeliveries: number;
+  lastScanAt?: number;
 }

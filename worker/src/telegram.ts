@@ -120,14 +120,15 @@ export class TelegramClient {
     return this.call<true>("setMyCommands", {
       commands: [
         { command: "start", description: "Открыть бота" },
-        { command: "claim", description: "Назначить владельца при первом запуске" },
-        { command: "settings", description: "Настройки (только владелец)" },
+        { command: "menu", description: "Главное меню владельца" },
+        { command: "creatives", description: "Управление креативами" },
+        { command: "references", description: "Управление референсами" },
+        { command: "creative", description: "Добавить текущий чат в креативы" },
+        { command: "reference", description: "Добавить текущую группу модели" },
+        { command: "warehouse", description: "Назначить склад референсов" },
+        { command: "users", description: "Управление доступом" },
         { command: "join", description: "Войти по приглашению" },
-        { command: "settarget", description: "Назначить место публикации" },
-        { command: "setwarehouse", description: "Назначить склад референсов" },
-        { command: "queue", description: "Состояние очереди" },
-        { command: "refs", description: "Референсы моделей" },
-        { command: "model", description: "Назначить текущий чат моделью" },
+        { command: "claim", description: "Назначить владельца" },
       ],
     });
   }

@@ -144,6 +144,10 @@ jobs:
           worker_url="https://instagram-creative-bot.${subdomain}.workers.dev"
           health="$(curl --fail-with-body --silent --show-error "$worker_url/health")"
           [[ "$(jq -r '.ok' <<<"$health")" == "true" ]] || { echo "$health" >&2; exit 1; }
+          [[ "$(jq -r '.appVersion' <<<"$health")" == "4.0.0" ]] || { echo "Wrong Worker version" >&2; echo "$health" >&2; exit 1; }
+          [[ "$(jq -r '.architecture' <<<"$health")" == "creative-reference-split-v4" ]] || { echo "Wrong Worker architecture" >&2; echo "$health" >&2; exit 1; }
+          [[ "$(jq -r '.referenceProtocol' <<<"$health")" == "5" ]] || { echo "Wrong reference protocol" >&2; echo "$health" >&2; exit 1; }
+          [[ "$(jq -r '.references.catalogNiches' <<<"$health")" == "473" ]] || { echo "Wrong reference catalog" >&2; echo "$health" >&2; exit 1; }
           echo "$health"
 
           # Secret updates create a new Worker version. Wait until that version
@@ -186,7 +190,7 @@ jobs:
             "$api/setWebhook")"
           [[ "$(jq -r '.ok' <<<"$webhook")" == "true" ]] || { echo "$webhook" >&2; exit 1; }
 
-          commands='{"commands":[{"command":"start","description":"Открыть бота"},{"command":"claim","description":"Назначить владельца при первом запуске"},{"command":"settings","description":"Настройки (только владелец)"},{"command":"join","description":"Войти по приглашению"},{"command":"settarget","description":"Назначить текущую группу"},{"command":"queue","description":"Состояние очереди"}]}'
+          commands='{"commands":[{"command":"start","description":"Открыть бота"},{"command":"menu","description":"Главное меню владельца"},{"command":"creatives","description":"Управление креативами"},{"command":"references","description":"Управление референсами"},{"command":"creative","description":"Добавить текущий чат в креативы"},{"command":"reference","description":"Добавить текущую группу модели"},{"command":"warehouse","description":"Назначить склад референсов"},{"command":"users","description":"Управление доступом"},{"command":"join","description":"Войти по приглашению"},{"command":"claim","description":"Назначить владельца"}]}'
           commands_result="$(curl --fail-with-body --silent --show-error \
             -X POST \
             -H "Content-Type: application/json" \

@@ -118,6 +118,10 @@ export interface TargetRecord {
   configuredBy: string;
 }
 
+export interface CreativeTargetRecord extends TargetRecord {
+  isDefault: boolean;
+}
+
 export interface QueueJobInput {
   requestKey: string;
   url: string;

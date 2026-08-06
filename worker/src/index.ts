@@ -1,5 +1,5 @@
 import { telegramWebhookSecret } from "./config";
-import { handleAgentApi } from "./agent-api";
+import { handleAgentApi, REFERENCE_PROTOCOL_VERSION } from "./agent-api";
 import { UpdateHandler } from "./handlers";
 import { JobQueue } from "./job-queue";
 import { queueStub } from "./queue";
@@ -10,7 +10,7 @@ export { JobQueue };
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
-      return await routeRequest(request, env, ctx);
+      return await routeRequest(request, env);
     } catch (error) {
       console.error("worker request failed", {
         method: request.method,
@@ -34,13 +34,24 @@ export default {
 async function routeRequest(
   request: Request,
   env: Env,
-  ctx: ExecutionContext,
 ): Promise<Response> {
   const url = new URL(request.url);
 
   if (request.method === "GET" && url.pathname === "/health") {
+    const queue = queueStub(env);
+    const [creativeStats, referenceStats] = await Promise.all([
+      queue.stats(),
+      queue.referenceStats(),
+    ]);
     return Response.json(
-      { ok: true, mode: "local-desktop-queue", queue: await queueStub(env).stats() },
+      {
+        ok: true,
+        appVersion: "4.0.0",
+        architecture: "creative-reference-split-v4",
+        referenceProtocol: REFERENCE_PROTOCOL_VERSION,
+        creatives: creativeStats,
+        references: referenceStats,
+      },
       { headers: { "cache-control": "no-store" } },
     );
   }
@@ -63,9 +74,7 @@ async function routeRequest(
     }
 
     const handler = new UpdateHandler(env);
-    ctx.waitUntil(
-      handler.handle(update).catch((error) => console.error("unhandled update error", error)),
-    );
+    await handler.handle(update);
     return new Response("OK");
   }
 

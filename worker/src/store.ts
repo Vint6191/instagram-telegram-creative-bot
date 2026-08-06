@@ -1,5 +1,6 @@
 import type {
   AuthorizedUserRecord,
+  CreativeTargetRecord,
   InviteRecord,
   TargetRecord,
   TelegramUser,
@@ -7,11 +8,13 @@ import type {
 
 const USER_PREFIX = "user:";
 const INVITE_PREFIX = "invite:";
-const TARGET_KEY = "settings:target";
-const WAREHOUSE_KEY = "settings:warehouse";
+const LEGACY_TARGET_KEY = "settings:target";
+const CREATIVE_TARGETS_KEY = "creative:targets:v4";
+const PREVIOUS_CREATIVE_TARGET_KEYS = ["creative:targets:v3", "creative:targets:v2"] as const;
+const WAREHOUSE_KEY = "references:warehouse:v4";
+const LEGACY_WAREHOUSE_KEYS = ["settings:warehouse", "references:warehouse:v3"] as const;
 const ROOT_ADMIN_KEY = "settings:root-admin";
 const BOT_KEY = "meta:bot";
-const UPDATE_PREFIX = "update:";
 
 interface RootAdminRecord {
   id: string;
@@ -46,14 +49,9 @@ export class ConfigStore {
     suppliedCode: string,
     expectedCode: string,
   ): Promise<RootAdminClaimResult> {
-    if (normalizeCode(suppliedCode) !== normalizeCode(expectedCode)) {
-      return "invalid-code";
-    }
-
+    if (normalizeCode(suppliedCode) !== normalizeCode(expectedCode)) return "invalid-code";
     const current = await this.getRootAdminId();
-    if (current) {
-      return current === String(user.id) ? "claimed" : "already-claimed";
-    }
+    if (current) return current === String(user.id) ? "claimed" : "already-claimed";
 
     const record: RootAdminRecord = {
       id: String(user.id),
@@ -71,10 +69,7 @@ export class ConfigStore {
     return (await this.kv.get(`${USER_PREFIX}${String(userId)}`)) !== null;
   }
 
-  async addAuthorizedUser(
-    user: TelegramUser,
-    addedBy: string | number,
-  ): Promise<AuthorizedUserRecord> {
+  async addAuthorizedUser(user: TelegramUser, addedBy: string | number): Promise<AuthorizedUserRecord> {
     const record: AuthorizedUserRecord = {
       id: String(user.id),
       firstName: user.first_name,
@@ -88,18 +83,14 @@ export class ConfigStore {
   }
 
   async revokeUser(userId: string | number): Promise<void> {
-    if (await this.isRootAdmin(userId)) {
-      throw new Error("Root admin cannot be revoked");
-    }
+    if (await this.isRootAdmin(userId)) throw new Error("Root admin cannot be revoked");
     await this.kv.delete(`${USER_PREFIX}${String(userId)}`);
   }
 
   async listAuthorizedUsers(): Promise<AuthorizedUserRecord[]> {
     const list = await this.kv.list({ prefix: USER_PREFIX });
     const records = await Promise.all(
-      list.keys.map(async (key) => {
-        return this.kv.get<AuthorizedUserRecord>(key.name, "json");
-      }),
+      list.keys.map((key) => this.kv.get<AuthorizedUserRecord>(key.name, "json")),
     );
     return records
       .filter((item): item is AuthorizedUserRecord => item !== null)
@@ -135,20 +126,68 @@ export class ConfigStore {
     return record;
   }
 
-  async getTarget(): Promise<TargetRecord | null> {
-    return this.kv.get<TargetRecord>(TARGET_KEY, "json");
+  async listCreativeTargets(): Promise<CreativeTargetRecord[]> {
+    let records = await this.kv.get<CreativeTargetRecord[]>(CREATIVE_TARGETS_KEY, "json");
+    if (!Array.isArray(records)) {
+      let previous: CreativeTargetRecord[] | null = null;
+      for (const key of PREVIOUS_CREATIVE_TARGET_KEYS) {
+        const candidate = await this.kv.get<CreativeTargetRecord[]>(key, "json");
+        if (Array.isArray(candidate)) {
+          previous = candidate;
+          break;
+        }
+      }
+      const legacy = await this.kv.get<TargetRecord>(LEGACY_TARGET_KEY, "json");
+      records = previous ?? (legacy ? [{ ...legacy, isDefault: true }] : []);
+      await this.saveCreativeTargets(records);
+    }
+    const normalized = normalizeCreativeTargets(records);
+    if (JSON.stringify(normalized) !== JSON.stringify(records)) {
+      await this.saveCreativeTargets(normalized);
+    }
+    return normalized;
   }
 
-  async setTarget(target: TargetRecord): Promise<void> {
-    await this.kv.put(TARGET_KEY, JSON.stringify(target));
+  async getDefaultCreativeTarget(): Promise<CreativeTargetRecord | null> {
+    const targets = await this.listCreativeTargets();
+    return targets.find((item) => item.isDefault) ?? targets[0] ?? null;
   }
 
-  async clearTarget(): Promise<void> {
-    await this.kv.delete(TARGET_KEY);
+  async upsertCreativeTarget(target: TargetRecord): Promise<CreativeTargetRecord> {
+    const targets = await this.listCreativeTargets();
+    const index = targets.findIndex((item) => item.chatId === target.chatId);
+    const record: CreativeTargetRecord = {
+      ...target,
+      isDefault: index >= 0 ? Boolean(targets[index]?.isDefault) : targets.length === 0,
+    };
+    if (index >= 0) targets[index] = record;
+    else targets.push(record);
+    const normalized = normalizeCreativeTargets(targets);
+    await this.saveCreativeTargets(normalized);
+    return normalized.find((item) => item.chatId === target.chatId)!;
+  }
+
+  async setDefaultCreativeTarget(chatId: string | number): Promise<CreativeTargetRecord> {
+    const targetId = String(chatId);
+    const targets = await this.listCreativeTargets();
+    if (!targets.some((item) => item.chatId === targetId)) throw new Error("Место публикации не найдено");
+    const updated = targets.map((item) => ({ ...item, isDefault: item.chatId === targetId }));
+    await this.saveCreativeTargets(updated);
+    return updated.find((item) => item.chatId === targetId)!;
+  }
+
+  async removeCreativeTarget(chatId: string | number): Promise<void> {
+    const targetId = String(chatId);
+    const targets = (await this.listCreativeTargets()).filter((item) => item.chatId !== targetId);
+    await this.saveCreativeTargets(normalizeCreativeTargets(targets));
   }
 
   async getWarehouse(): Promise<TargetRecord | null> {
-    return this.kv.get<TargetRecord>(WAREHOUSE_KEY, "json");
+    const current = await this.kv.get<TargetRecord>(WAREHOUSE_KEY, "json");
+    // The old key could point to the owner's private chat or another wrong
+    // destination. It is deliberately destroyed instead of being migrated.
+    await Promise.all(LEGACY_WAREHOUSE_KEYS.map((key) => this.kv.delete(key)));
+    return current;
   }
 
   async setWarehouse(target: TargetRecord): Promise<void> {
@@ -167,12 +206,25 @@ export class ConfigStore {
     await this.kv.put(BOT_KEY, JSON.stringify(identity));
   }
 
-  async claimUpdate(updateId: number): Promise<boolean> {
-    const key = `${UPDATE_PREFIX}${updateId}`;
-    if ((await this.kv.get(key)) !== null) return false;
-    await this.kv.put(key, "1", { expirationTtl: 25 * 60 * 60 });
-    return true;
+  private async saveCreativeTargets(records: CreativeTargetRecord[]): Promise<void> {
+    await this.kv.put(CREATIVE_TARGETS_KEY, JSON.stringify(records));
   }
+}
+
+function normalizeCreativeTargets(records: CreativeTargetRecord[]): CreativeTargetRecord[] {
+  const unique = new Map<string, CreativeTargetRecord>();
+  for (const raw of records) {
+    if (!raw || !/^-?\d+$/u.test(String(raw.chatId))) continue;
+    unique.set(String(raw.chatId), {
+      ...raw,
+      chatId: String(raw.chatId),
+      title: String(raw.title || raw.chatId).slice(0, 120),
+      isDefault: Boolean(raw.isDefault),
+    });
+  }
+  const result = [...unique.values()];
+  const defaultId = result.find((item) => item.isDefault)?.chatId ?? result[0]?.chatId;
+  return result.map((item) => ({ ...item, isDefault: item.chatId === defaultId }));
 }
 
 function normalizeCode(value: string): string {

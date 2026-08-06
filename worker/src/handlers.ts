@@ -26,6 +26,7 @@ const CALLBACK = {
   INVITE: "users:invite",
   CLEAR_TARGET: "target:clear",
   QUEUE: "settings:queue",
+  REFS: "refs:home",
 } as const;
 
 export class UpdateHandler {
@@ -180,6 +181,34 @@ export class UpdateHandler {
       await this.sendQueueStatus(message.chat.id);
       return;
     }
+
+    if (name === "refs") {
+      if (!(await this.store.isAuthorized(user.id))) {
+        await this.telegram.sendMessage(message.chat.id, "У тебя нет доступа к референсам.");
+        return;
+      }
+      await this.sendReferencesHome(message.chat.id);
+      return;
+    }
+
+    if (name === "model") {
+      if (!(await this.store.isAuthorized(user.id))) {
+        await this.telegram.sendMessage(message.chat.id, "У тебя нет доступа к референсам.");
+        return;
+      }
+      if (!["private", "group", "supergroup"].includes(message.chat.type)) {
+        await this.telegram.sendMessage(message.chat.id, "Моделью можно назначить личный чат или группу.");
+        return;
+      }
+      const nameValue = args.trim() || chatDisplayName(message.chat);
+      const model = await queueStub(this.env).registerReferenceModel(String(message.chat.id), nameValue);
+      await this.telegram.sendMessage(
+        message.chat.id,
+        `✅ Чат назначен моделью: <b>${escapeHtml(model.name)}</b>. Ниши выбираются владельцем через /refs.`,
+      );
+      return;
+    }
+
 
     if (name === "users") {
       if (!(await this.store.isRootAdmin(user.id))) return;
@@ -383,7 +412,13 @@ export class UpdateHandler {
       return;
     }
 
-    if (!(await this.store.isRootAdmin(query.from.id))) {
+    const referenceCallback = isReferenceCallback(data);
+    if (referenceCallback) {
+      if (!(await this.store.isAuthorized(query.from.id))) {
+        await this.telegram.answerCallbackQuery(query.id, "Нет доступа к референсам", true);
+        return;
+      }
+    } else if (!(await this.store.isRootAdmin(query.from.id))) {
       await this.telegram.answerCallbackQuery(query.id, "Только для владельца", true);
       return;
     }
@@ -429,6 +464,35 @@ export class UpdateHandler {
           `Готово. Место публикации: <b>${escapeHtml(chatDisplayName(chat))}</b>.`,
           { reply_markup: backKeyboard() },
         );
+      } else if (data === "rh") {
+        await this.editReferencesHome(chatId, messageId);
+      } else if (data.startsWith("rms:")) {
+        await this.editReferenceModels(chatId, messageId, callbackPage(data));
+      } else if (data.startsWith("rm:")) {
+        const [, modelChatId, pageRaw] = data.split(":");
+        await this.editReferenceModel(chatId, messageId, modelChatId ?? "", Number(pageRaw ?? 0));
+      } else if (data.startsWith("rmt:")) {
+        const [, modelChatId, slug, pageRaw] = data.split(":");
+        const result = await queueStub(this.env).toggleReferenceModelNiche(modelChatId ?? "", slug ?? "");
+        await this.telegram.answerCallbackQuery(
+          query.id,
+          result.enabled
+            ? `Ниша включена. В очередь добавлено: ${result.queued}`
+            : "Ниша выключена",
+        );
+        await this.editReferenceModel(chatId, messageId, modelChatId ?? "", Number(pageRaw ?? 0));
+        return;
+      } else if (data.startsWith("rrm:")) {
+        const modelChatId = data.slice("rrm:".length);
+        await queueStub(this.env).removeReferenceModel(modelChatId);
+        await this.editReferenceModels(chatId, messageId, 0);
+      } else if (data.startsWith("rns:")) {
+        await this.editReferenceNiches(chatId, messageId, callbackPage(data));
+      } else if (data === "rcs") {
+        await queueStub(this.env).requestReferenceCatalogSync();
+        await this.telegram.answerCallbackQuery(query.id, "Обновление каталога поставлено в очередь");
+        await this.editReferencesHome(chatId, messageId);
+        return;
       }
 
       await this.telegram.answerCallbackQuery(query.id);
@@ -442,6 +506,69 @@ export class UpdateHandler {
             : "Не удалось выполнить действие";
       await this.telegram.answerCallbackQuery(query.id, text.slice(0, 180), true);
     }
+  }
+
+  private async sendReferencesHome(chatId: string | number): Promise<void> {
+    const stats = await queueStub(this.env).referenceStats();
+    await this.telegram.sendMessage(chatId, referencesHomeText(stats), {
+      reply_markup: referencesHomeKeyboard(),
+    });
+  }
+
+  private async editReferencesHome(chatId: string | number, messageId: number): Promise<void> {
+    const stats = await queueStub(this.env).referenceStats();
+    await this.telegram.editMessageText(chatId, messageId, referencesHomeText(stats), {
+      reply_markup: referencesHomeKeyboard(),
+    });
+  }
+
+  private async editReferenceModels(
+    chatId: string | number,
+    messageId: number,
+    page: number,
+  ): Promise<void> {
+    const models = await queueStub(this.env).listReferenceModels();
+    const safePage = clampPage(page, models.length, 8);
+    await this.telegram.editMessageText(
+      chatId,
+      messageId,
+      referenceModelsText(models),
+      { reply_markup: referenceModelsKeyboard(models, safePage) },
+    );
+  }
+
+  private async editReferenceModel(
+    chatId: string | number,
+    messageId: number,
+    modelChatId: string,
+    page: number,
+  ): Promise<void> {
+    const models = await queueStub(this.env).listReferenceModels();
+    const model = models.find((item) => item.chatId === modelChatId);
+    if (!model) throw new Error("Модель не найдена");
+    const niches = await queueStub(this.env).listReferenceNiches();
+    const safePage = clampPage(page, niches.length, 10);
+    await this.telegram.editMessageText(
+      chatId,
+      messageId,
+      referenceModelText(model),
+      { reply_markup: referenceModelKeyboard(model, niches, safePage) },
+    );
+  }
+
+  private async editReferenceNiches(
+    chatId: string | number,
+    messageId: number,
+    page: number,
+  ): Promise<void> {
+    const niches = await queueStub(this.env).listReferenceNiches();
+    const safePage = clampPage(page, niches.length, 10);
+    await this.telegram.editMessageText(
+      chatId,
+      messageId,
+      referenceNichesText(niches, safePage),
+      { reply_markup: referenceNichesKeyboard(niches, safePage) },
+    );
   }
 
   private async sendSettings(chatId: string | number): Promise<void> {
@@ -546,6 +673,14 @@ export class UpdateHandler {
   }
 }
 
+type InlineButton = { text: string; callback_data: string };
+
+function isReferenceCallback(data: string): boolean {
+  return data === "rh" || data === "rcs" || ["rms:", "rm:", "rmt:", "rrm:", "rns:"].some(
+    (prefix) => data.startsWith(prefix),
+  );
+}
+
 function parseCommand(text: string): { name: string; args: string } | null {
   const match = text.match(/^\/([a-z0-9_]+)(?:@[a-z0-9_]+)?(?:\s+([\s\S]*))?$/iu);
   if (!match) return null;
@@ -577,6 +712,7 @@ function settingsKeyboard(hasTarget: boolean): Record<string, unknown> {
       { text: "📣 Куда публиковать", callback_data: CALLBACK.TARGET },
     ],
     [{ text: "📋 Очередь", callback_data: CALLBACK.QUEUE }],
+    [{ text: "🎬 Референсы", callback_data: "rh" }],
   ];
   if (hasTarget) {
     rows.push([{ text: "Сбросить место публикации", callback_data: CALLBACK.CLEAR_TARGET }]);
@@ -610,6 +746,166 @@ function usersKeyboard(users: Array<{ id: string; username?: string; firstName: 
   }
   rows.push([{ text: "← Назад", callback_data: CALLBACK.HOME }]);
   return { inline_keyboard: rows };
+}
+
+function referencesHomeText(stats: {
+  models: number;
+  activeNiches: number;
+  catalogNiches: number;
+  catalogPending: boolean;
+  catalogSyncedAt?: number;
+  catalogError?: string;
+  storedMedia: number;
+  pendingUploads: number;
+  pendingDeliveries: number;
+  sentDeliveries: number;
+}): string {
+  const catalogState = stats.catalogPending
+    ? "⏳ обновляется"
+    : stats.catalogSyncedAt
+      ? `обновлён ${formatAge(Date.now() - stats.catalogSyncedAt)} назад`
+      : "ещё не получен";
+  return [
+    "<b>Референсы</b>",
+    "",
+    `👤 Моделей: <b>${stats.models}</b>`,
+    `🔥 Ниш RedGIFs: <b>${stats.catalogNiches}</b> · ${catalogState}`,
+    `🎞 На складе: <b>${stats.storedMedia}</b>`,
+    `⬇️ Ждут загрузки: <b>${stats.pendingUploads}</b>`,
+    `📤 В очереди моделям: <b>${stats.pendingDeliveries}</b>`,
+    `✅ Отправлено: <b>${stats.sentDeliveries}</b>`,
+    ...(stats.catalogError ? ["", `⚠️ ${escapeHtml(stats.catalogError)}`] : []),
+    "",
+    "Добавь бота в рабочий чат модели и отправь там <code>/model Имя</code>. Затем открой модель здесь и отметь нужные ниши галочками.",
+  ].join("\n");
+}
+
+function referencesHomeKeyboard(): Record<string, unknown> {
+  return {
+    inline_keyboard: [
+      [
+        { text: "👤 Модели", callback_data: "rms:0" },
+        { text: "🔥 Все ниши", callback_data: "rns:0" },
+      ],
+      [{ text: "↻ Обновить каталог ниш", callback_data: "rcs" }],
+      [{ text: "← Настройки", callback_data: CALLBACK.HOME }],
+    ],
+  };
+}
+
+function referenceModelsText(models: Array<{ name: string; nicheCount: number; deliveryCount: number }>): string {
+  if (models.length === 0) {
+    return "<b>Модели</b>\n\nПока пусто. Добавь бота в рабочий чат модели и отправь там <code>/model Имя</code>.";
+  }
+  return [
+    "<b>Модели</b>",
+    "",
+    ...models.slice(0, 30).map(
+      (model) => `• ${escapeHtml(model.name)} — ниш: <b>${model.nicheCount}</b>, отправлено: <b>${model.deliveryCount}</b>`,
+    ),
+  ].join("\n");
+}
+
+function referenceModelsKeyboard(
+  models: Array<{ chatId: string; name: string }>,
+  page: number,
+): Record<string, unknown> {
+  const pageSize = 8;
+  const rows: InlineButton[][] = models.slice(page * pageSize, page * pageSize + pageSize).map((model) => [
+    { text: `👤 ${model.name}`.slice(0, 55), callback_data: `rm:${model.chatId}:0` },
+  ]);
+  rows.push(pagerRow("rms", page, models.length, pageSize));
+  rows.push([{ text: "← Референсы", callback_data: "rh" }]);
+  return { inline_keyboard: rows.filter((row) => row.length > 0) };
+}
+
+function referenceModelText(model: {
+  chatId: string;
+  name: string;
+  nicheCount: number;
+  deliveryCount: number;
+}): string {
+  return [
+    `<b>${escapeHtml(model.name)}</b>`,
+    "",
+    `Ниш выбрано: <b>${model.nicheCount}</b>`,
+    `Референсов отправлено: <b>${model.deliveryCount}</b>`,
+    "",
+    "Отмечай ниши галочками. Новая модель получит весь уже накопленный склад выбранных ниш, а дальше — каждый новый HOT-референс.",
+  ].join("\n");
+}
+
+function referenceModelKeyboard(
+  model: { chatId: string; niches: string[] },
+  niches: Array<{ slug: string; title: string; mediaCount: number }>,
+  page: number,
+): Record<string, unknown> {
+  const pageSize = 10;
+  const selected = new Set(model.niches);
+  const rows: InlineButton[][] = niches.slice(page * pageSize, page * pageSize + pageSize).map((niche) => [
+    {
+      text: `${selected.has(niche.slug) ? "✅" : "▫️"} ${niche.title} · ${niche.mediaCount}`.slice(0, 56),
+      callback_data: `rmt:${model.chatId}:${niche.slug}:${page}`,
+    },
+  ]);
+  rows.push(pagerRow(`rm:${model.chatId}`, page, niches.length, pageSize));
+  rows.push([{ text: "🗑 Удалить модель", callback_data: `rrm:${model.chatId}` }]);
+  rows.push([{ text: "← Модели", callback_data: "rms:0" }]);
+  return { inline_keyboard: rows.filter((row) => row.length > 0) };
+}
+
+function referenceNichesText(
+  niches: Array<{ title: string; modelCount: number; mediaCount: number }>,
+  page: number,
+): string {
+  const pageSize = 10;
+  const visible = niches.slice(page * pageSize, page * pageSize + pageSize);
+  return [
+    "<b>Все ниши RedGIFs</b>",
+    "",
+    `Получено автоматически: <b>${niches.length}</b>. Из каждой ниши раз в час берётся HOT-10.`,
+    "",
+    ...visible.map(
+      (niche) => `• ${escapeHtml(niche.title)} — роликов: <b>${niche.mediaCount}</b>, моделей: <b>${niche.modelCount}</b>`,
+    ),
+  ].join("\n");
+}
+
+function referenceNichesKeyboard(
+  niches: Array<{ slug: string; title: string; mediaCount: number }>,
+  page: number,
+): Record<string, unknown> {
+  const pageSize = 10;
+  const rows: InlineButton[][] = [];
+  rows.push(pagerRow("rns", page, niches.length, pageSize));
+  rows.push([{ text: "↻ Обновить каталог", callback_data: "rcs" }]);
+  rows.push([{ text: "← Референсы", callback_data: "rh" }]);
+  return { inline_keyboard: rows.filter((row) => row.length > 0) };
+}
+
+function pagerRow(
+  prefix: string,
+  page: number,
+  total: number,
+  pageSize: number,
+): InlineButton[] {
+  const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+  const row: InlineButton[] = [];
+  if (page > 0) row.push({ text: "←", callback_data: `${prefix}:${page - 1}` });
+  if (maxPage > 0) row.push({ text: `${page + 1}/${maxPage + 1}`, callback_data: `${prefix}:${page}` });
+  if (page < maxPage) row.push({ text: "→", callback_data: `${prefix}:${page + 1}` });
+  return row;
+}
+
+function clampPage(page: number, total: number, pageSize: number): number {
+  const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+  return Number.isFinite(page) ? Math.max(0, Math.min(maxPage, Math.floor(page))) : 0;
+}
+
+function callbackPage(data: string): number {
+  const raw = data.split(":").at(-1);
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 }
 
 function backKeyboard(): Record<string, unknown> {

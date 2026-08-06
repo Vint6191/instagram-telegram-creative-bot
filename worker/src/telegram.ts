@@ -125,6 +125,8 @@ export class TelegramClient {
         { command: "join", description: "Войти по приглашению" },
         { command: "settarget", description: "Назначить текущую группу" },
         { command: "queue", description: "Состояние очереди" },
+        { command: "refs", description: "Референсы моделей" },
+        { command: "model", description: "Назначить текущий чат моделью" },
       ],
     });
   }

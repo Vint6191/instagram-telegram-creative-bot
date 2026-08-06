@@ -46,9 +46,10 @@ async function routeRequest(
     return Response.json(
       {
         ok: true,
-        appVersion: "4.0.2",
+        appVersion: "4.1.0",
         architecture: "creative-reference-split-v4",
         referenceProtocol: REFERENCE_PROTOCOL_VERSION,
+        referenceScan: { order: "hot", limit: 5 },
         buildId: env.BUILD_ID?.trim() || "local",
         creatives: creativeStats,
         references: referenceStats,

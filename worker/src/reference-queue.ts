@@ -7,6 +7,7 @@ import {
   referenceCatalogBySlug,
 } from "./reference-catalog";
 import type {
+  ReferenceCatalogCategoryRecord,
   ReferenceCategoryRecord,
   ReferenceDeliveryLease,
   ReferenceDiscoveredItem,
@@ -141,6 +142,11 @@ export class ReferenceQueueRepository {
       );
       CREATE INDEX IF NOT EXISTS ref4_catalog_category_idx
         ON ref4_catalog(category, sort_order);
+
+      CREATE TABLE IF NOT EXISTS ref4_disabled_niches (
+        slug TEXT PRIMARY KEY,
+        disabled_at INTEGER NOT NULL
+      );
 
       CREATE TABLE IF NOT EXISTS ref4_niche_runtime (
         slug TEXT PRIMARY KEY,
@@ -278,7 +284,7 @@ export class ReferenceQueueRepository {
     this.sql.exec("UPDATE ref4_groups SET active = ?, updated_at = ? WHERE chat_id = ? AND deleted_at IS NULL", active ? 1 : 0, Date.now(), chatId);
     if (!active) {
       this.sql.exec(
-        "DELETE FROM ref4_deliveries WHERE group_chat_id = ? AND status = 'pending'",
+        "DELETE FROM ref4_deliveries WHERE group_chat_id = ? AND status IN ('pending', 'failed')",
         chatId,
       );
     } else {
@@ -291,7 +297,7 @@ export class ReferenceQueueRepository {
     const chatId = normalizeChatId(chatIdValue);
     const now = Date.now();
     this.sql.exec("DELETE FROM ref4_group_niches WHERE group_chat_id = ?", chatId);
-    this.sql.exec("DELETE FROM ref4_deliveries WHERE group_chat_id = ? AND status = 'pending'", chatId);
+    this.sql.exec("DELETE FROM ref4_deliveries WHERE group_chat_id = ? AND status IN ('pending', 'failed')", chatId);
     this.sql.exec(
       "UPDATE ref4_groups SET active = 0, deleted_at = ?, updated_at = ? WHERE chat_id = ?",
       now,
@@ -341,6 +347,108 @@ export class ReferenceQueueRepository {
         (item) => item.category === category.key && selected.has(item.slug),
       ).length,
     }));
+  }
+
+  listCatalogCategories(): ReferenceCatalogCategoryRecord[] {
+    const disabled = new Set(this.listDisabledNiches());
+    return REFERENCE_CATEGORIES.map((category) => ({
+      key: category.key,
+      title: category.title,
+      count: category.count,
+      enabledCount: REFERENCE_CATALOG.filter(
+        (item) => item.category === category.key && !disabled.has(item.slug),
+      ).length,
+    }));
+  }
+
+  listDisabledNiches(): string[] {
+    return this.sql
+      .exec<{ slug: string }>(
+        `SELECT d.slug FROM ref4_disabled_niches d
+         JOIN ref4_catalog c ON c.slug = d.slug
+         ORDER BY c.sort_order ASC`,
+      )
+      .toArray()
+      .map((row) => row.slug);
+  }
+
+  setCatalogNicheEnabled(slugValue: string, enabled: boolean): boolean {
+    const slug = normalizeCatalogSlug(slugValue);
+    const now = Date.now();
+    if (enabled) {
+      this.sql.exec("DELETE FROM ref4_disabled_niches WHERE slug = ?", slug);
+      this.sql.exec(
+        `UPDATE ref4_niche_runtime SET next_scan_at = MIN(next_scan_at, ?), last_scan_error = NULL
+         WHERE slug = ?`,
+        now,
+        slug,
+      );
+      this.queueBackfillForEnabledNiche(slug, now);
+      return true;
+    }
+
+    this.sql.exec(
+      "INSERT OR REPLACE INTO ref4_disabled_niches (slug, disabled_at) VALUES (?, ?)",
+      slug,
+      now,
+    );
+    this.sql.exec(
+      `UPDATE ref4_niche_runtime SET
+        last_scan_error = NULL,
+        scan_lease_owner = NULL,
+        scan_lease_token = NULL,
+        scan_lease_expires_at = NULL
+       WHERE slug = ?`,
+      slug,
+    );
+    this.prunePendingForDisabledCatalog();
+    return false;
+  }
+
+  setCatalogCategoryEnabled(
+    categoryValue: string,
+    enabled: boolean,
+  ): { enabledCount: number; disabledCount: number } {
+    const category = cleanText(categoryValue, 40);
+    const items = REFERENCE_CATALOG.filter((item) => item.category === category);
+    if (items.length === 0) throw new Error("Категория не найдена");
+    const now = Date.now();
+
+    if (enabled) {
+      this.sql.exec(
+        `DELETE FROM ref4_disabled_niches
+         WHERE slug IN (SELECT slug FROM ref4_catalog WHERE category = ?)`,
+        category,
+      );
+      this.sql.exec(
+        `UPDATE ref4_niche_runtime SET next_scan_at = MIN(next_scan_at, ?), last_scan_error = NULL
+         WHERE slug IN (SELECT slug FROM ref4_catalog WHERE category = ?)`,
+        now,
+        category,
+      );
+      this.queueBackfillForEnabledCategory(category, now);
+    } else {
+      this.sql.exec(
+        `INSERT OR REPLACE INTO ref4_disabled_niches (slug, disabled_at)
+         SELECT slug, ? FROM ref4_catalog WHERE category = ?`,
+        now,
+        category,
+      );
+      this.sql.exec(
+        `UPDATE ref4_niche_runtime SET
+          last_scan_error = NULL,
+          scan_lease_owner = NULL,
+          scan_lease_token = NULL,
+          scan_lease_expires_at = NULL
+         WHERE slug IN (SELECT slug FROM ref4_catalog WHERE category = ?)`,
+        category,
+      );
+      this.prunePendingForDisabledCatalog();
+    }
+
+    const disabled = new Set(this.listDisabledNiches());
+    const disabledCount = items.filter((item) => disabled.has(item.slug)).length;
+    return { enabledCount: items.length - disabledCount, disabledCount };
   }
 
   setGroupNiche(
@@ -439,6 +547,7 @@ export class ReferenceQueueRepository {
         failed_niches: number;
         failed_uploads: number;
         failed_deliveries: number;
+        disabled_niches: number;
         last_scan_at: number | null;
       }>(
         `SELECT
@@ -450,9 +559,25 @@ export class ReferenceQueueRepository {
           (SELECT COUNT(*) FROM ref4_deliveries WHERE status IN ('pending', 'leased')) AS pending_deliveries,
           (SELECT COUNT(*) FROM ref4_deliveries WHERE status = 'sent') AS sent_deliveries,
           (SELECT COUNT(*) FROM ref4_catalog) AS catalog_stored_niches,
-          (SELECT COUNT(*) FROM ref4_niche_runtime WHERE last_scan_error IS NOT NULL) AS failed_niches,
-          (SELECT COUNT(*) FROM ref4_media WHERE upload_status = 'failed') AS failed_uploads,
-          (SELECT COUNT(*) FROM ref4_deliveries WHERE status = 'failed') AS failed_deliveries,
+          (SELECT COUNT(*) FROM ref4_disabled_niches) AS disabled_niches,
+          (SELECT COUNT(*) FROM ref4_niche_runtime r
+            WHERE r.last_scan_error IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = r.slug)) AS failed_niches,
+          (SELECT COUNT(*) FROM ref4_media m WHERE m.upload_status = 'failed'
+            AND EXISTS (
+              SELECT 1 FROM ref4_media_niches mn
+              WHERE mn.media_id = m.id
+                AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
+            )) AS failed_uploads,
+          (SELECT COUNT(*) FROM ref4_deliveries d WHERE d.status = 'failed'
+            AND EXISTS (
+              SELECT 1 FROM ref4_media_niches mn
+              JOIN ref4_group_niches gn ON gn.niche_slug = mn.niche_slug
+              JOIN ref4_groups g ON g.chat_id = gn.group_chat_id
+              WHERE mn.media_id = d.media_id AND gn.group_chat_id = d.group_chat_id
+                AND g.active = 1 AND g.deleted_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches x WHERE x.slug = mn.niche_slug)
+            )) AS failed_deliveries,
           (SELECT MAX(last_scanned_at) FROM ref4_niche_runtime) AS last_scan_at`,
       )
       .one();
@@ -466,6 +591,7 @@ export class ReferenceQueueRepository {
       groups: Number(row.groups_count ?? 0),
       activeGroups: Number(row.active_groups ?? 0),
       catalogNiches: REFERENCE_CATALOG_COUNT,
+      disabledNiches: Number(row.disabled_niches ?? 0),
       catalogVersion: REFERENCE_CATALOG_VERSION,
       catalogStoredNiches,
       catalogReady,
@@ -483,28 +609,48 @@ export class ReferenceQueueRepository {
   retryFailures(): { niches: number; uploads: number; deliveries: number } {
     const now = Date.now();
     const niches = Number(this.sql.exec<{ count: number }>(
-      "SELECT COUNT(*) AS count FROM ref4_niche_runtime WHERE last_scan_error IS NOT NULL",
+      `SELECT COUNT(*) AS count FROM ref4_niche_runtime r
+       WHERE r.last_scan_error IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = r.slug)`,
     ).one().count ?? 0);
     const uploads = Number(this.sql.exec<{ count: number }>(
-      "SELECT COUNT(*) AS count FROM ref4_media WHERE upload_status = 'failed' AND warehouse_message_id IS NULL",
+      `SELECT COUNT(*) AS count FROM ref4_media m
+       WHERE m.upload_status = 'failed' AND m.warehouse_message_id IS NULL
+         AND EXISTS (
+           SELECT 1 FROM ref4_media_niches mn
+           WHERE mn.media_id = m.id
+             AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
+         )`,
     ).one().count ?? 0);
     const deliveries = Number(this.sql.exec<{ count: number }>(
       `SELECT COUNT(*) AS count FROM ref4_deliveries d
        JOIN ref4_groups g ON g.chat_id = d.group_chat_id
        JOIN ref4_media m ON m.id = d.media_id
        WHERE d.status = 'failed' AND g.active = 1 AND g.deleted_at IS NULL
-         AND m.upload_status = 'stored'`,
+         AND m.upload_status = 'stored'
+         AND EXISTS (
+           SELECT 1 FROM ref4_media_niches mn
+           JOIN ref4_group_niches gn ON gn.niche_slug = mn.niche_slug
+           WHERE mn.media_id = d.media_id AND gn.group_chat_id = d.group_chat_id
+             AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches x WHERE x.slug = mn.niche_slug)
+         )`,
     ).one().count ?? 0);
 
     this.sql.exec(
       `UPDATE ref4_niche_runtime SET last_scan_error = NULL, next_scan_at = ?
-       WHERE last_scan_error IS NOT NULL`,
+       WHERE last_scan_error IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = ref4_niche_runtime.slug)`,
       now,
     );
     this.sql.exec(
       `UPDATE ref4_media SET upload_status = 'pending', upload_attempt_count = 0,
         upload_available_at = ?, upload_error = NULL, updated_at = ?
-       WHERE upload_status = 'failed' AND warehouse_message_id IS NULL`,
+       WHERE upload_status = 'failed' AND warehouse_message_id IS NULL
+         AND EXISTS (
+           SELECT 1 FROM ref4_media_niches mn
+           WHERE mn.media_id = ref4_media.id
+             AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
+         )`,
       now,
       now,
     );
@@ -517,6 +663,15 @@ export class ReferenceQueueRepository {
          WHERE g.chat_id = ref4_deliveries.group_chat_id
            AND g.active = 1 AND g.deleted_at IS NULL
            AND m.upload_status = 'stored'
+           AND EXISTS (
+             SELECT 1 FROM ref4_media_niches mn
+             JOIN ref4_group_niches gn ON gn.niche_slug = mn.niche_slug
+             WHERE mn.media_id = m.id
+               AND gn.group_chat_id = g.chat_id
+               AND NOT EXISTS (
+                 SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug
+               )
+           )
        )`,
       now,
       now,
@@ -536,6 +691,9 @@ export class ReferenceQueueRepository {
         `SELECT * FROM ref4_niche_runtime
          WHERE next_scan_at <= ?
            AND (scan_lease_expires_at IS NULL OR scan_lease_expires_at <= ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = ref4_niche_runtime.slug
+           )
          ORDER BY next_scan_at ASC, slug ASC LIMIT 1`,
         now,
         now,
@@ -608,7 +766,7 @@ export class ReferenceQueueRepository {
     const now = Date.now();
     const uploads = new Map<string, ReferenceUploadTask>();
 
-    for (const raw of items.slice(0, 10)) {
+    for (const raw of items.slice(0, 5)) {
       const id = normalizeMediaId(raw.id);
       if (!id) continue;
       const sourceUrl = cleanText(raw.sourceUrl, 700) || `https://www.redgifs.com/watch/${id}`;
@@ -1009,6 +1167,10 @@ export class ReferenceQueueRepository {
        WHERE slug NOT IN (SELECT slug FROM ref4_catalog)`,
     );
     this.sql.exec(
+      `DELETE FROM ref4_disabled_niches
+       WHERE slug NOT IN (SELECT slug FROM ref4_catalog)`,
+    );
+    this.sql.exec(
       `DELETE FROM ref4_deliveries
        WHERE status != 'sent' AND NOT EXISTS (
          SELECT 1 FROM ref4_media_niches mn
@@ -1044,6 +1206,7 @@ export class ReferenceQueueRepository {
         `SELECT c.slug, c.title FROM ref4_media_niches mn
          JOIN ref4_catalog c ON c.slug = mn.niche_slug
          WHERE mn.media_id = ?
+           AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
          ORDER BY c.sort_order ASC`,
         id,
       )
@@ -1120,6 +1283,7 @@ export class ReferenceQueueRepository {
         SELECT 1 FROM ref4_group_niches gn
         JOIN ref4_media_niches mn ON mn.niche_slug = gn.niche_slug
         WHERE gn.group_chat_id = g.chat_id AND mn.media_id = ?
+          AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
       )`,
       mediaId,
       now,
@@ -1139,6 +1303,7 @@ export class ReferenceQueueRepository {
       FROM ref4_media m
       JOIN ref4_media_niches mn ON mn.media_id = m.id
       WHERE mn.niche_slug = ? AND m.upload_status = 'stored'
+        AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
         AND m.warehouse_chat_id IS NOT NULL AND m.warehouse_message_id IS NOT NULL`,
       chatId,
       now,
@@ -1158,6 +1323,7 @@ export class ReferenceQueueRepository {
       JOIN ref4_media_niches mn ON mn.media_id = m.id
       JOIN ref4_catalog c ON c.slug = mn.niche_slug
       WHERE c.category = ? AND m.upload_status = 'stored'
+        AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
         AND m.warehouse_chat_id IS NOT NULL AND m.warehouse_message_id IS NOT NULL`,
       chatId,
       now,
@@ -1177,6 +1343,7 @@ export class ReferenceQueueRepository {
       JOIN ref4_media_niches mn ON mn.media_id = m.id
       JOIN ref4_group_niches gn ON gn.niche_slug = mn.niche_slug
       WHERE gn.group_chat_id = ? AND m.upload_status = 'stored'
+        AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
         AND m.warehouse_chat_id IS NOT NULL AND m.warehouse_message_id IS NOT NULL`,
       chatId,
       now,
@@ -1189,14 +1356,82 @@ export class ReferenceQueueRepository {
   private prunePendingDeliveriesForGroup(chatId: string): void {
     this.sql.exec(
       `DELETE FROM ref4_deliveries
-       WHERE group_chat_id = ? AND status = 'pending'
+       WHERE group_chat_id = ? AND status IN ('pending', 'failed')
          AND NOT EXISTS (
            SELECT 1 FROM ref4_media_niches mn
            JOIN ref4_group_niches gn ON gn.niche_slug = mn.niche_slug
            WHERE mn.media_id = ref4_deliveries.media_id
              AND gn.group_chat_id = ref4_deliveries.group_chat_id
+             AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
          )`,
       chatId,
+    );
+  }
+
+  private queueBackfillForEnabledNiche(slug: string, now: number): void {
+    this.sql.exec(
+      `INSERT OR IGNORE INTO ref4_deliveries (
+        id, group_chat_id, media_id, status, attempt_count, available_at, created_at, updated_at
+      )
+      SELECT DISTINCT 'rd_' || hex(randomblob(12)), gn.group_chat_id, m.id, 'pending', 0, ?, ?, ?
+      FROM ref4_media m
+      JOIN ref4_media_niches mn ON mn.media_id = m.id
+      JOIN ref4_group_niches gn ON gn.niche_slug = mn.niche_slug
+      JOIN ref4_groups g ON g.chat_id = gn.group_chat_id
+      WHERE mn.niche_slug = ? AND g.active = 1 AND g.deleted_at IS NULL
+        AND m.upload_status = 'stored'
+        AND m.warehouse_chat_id IS NOT NULL AND m.warehouse_message_id IS NOT NULL`,
+      now,
+      now,
+      now,
+      slug,
+    );
+  }
+
+  private queueBackfillForEnabledCategory(category: string, now: number): void {
+    this.sql.exec(
+      `INSERT OR IGNORE INTO ref4_deliveries (
+        id, group_chat_id, media_id, status, attempt_count, available_at, created_at, updated_at
+      )
+      SELECT DISTINCT 'rd_' || hex(randomblob(12)), gn.group_chat_id, m.id, 'pending', 0, ?, ?, ?
+      FROM ref4_media m
+      JOIN ref4_media_niches mn ON mn.media_id = m.id
+      JOIN ref4_catalog c ON c.slug = mn.niche_slug
+      JOIN ref4_group_niches gn ON gn.niche_slug = mn.niche_slug
+      JOIN ref4_groups g ON g.chat_id = gn.group_chat_id
+      WHERE c.category = ? AND g.active = 1 AND g.deleted_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
+        AND m.upload_status = 'stored'
+        AND m.warehouse_chat_id IS NOT NULL AND m.warehouse_message_id IS NOT NULL`,
+      now,
+      now,
+      now,
+      category,
+    );
+  }
+
+  private prunePendingForDisabledCatalog(): void {
+    this.sql.exec(
+      `DELETE FROM ref4_deliveries
+       WHERE status IN ('pending', 'failed')
+         AND NOT EXISTS (
+           SELECT 1 FROM ref4_media_niches mn
+           JOIN ref4_group_niches gn ON gn.niche_slug = mn.niche_slug
+           JOIN ref4_groups g ON g.chat_id = gn.group_chat_id
+           WHERE mn.media_id = ref4_deliveries.media_id
+             AND gn.group_chat_id = ref4_deliveries.group_chat_id
+             AND g.active = 1 AND g.deleted_at IS NULL
+             AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
+         )`,
+    );
+    this.sql.exec(
+      `DELETE FROM ref4_media
+       WHERE upload_status IN ('pending', 'failed') AND warehouse_message_id IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM ref4_media_niches mn
+           WHERE mn.media_id = ref4_media.id
+             AND NOT EXISTS (SELECT 1 FROM ref4_disabled_niches d WHERE d.slug = mn.niche_slug)
+         )`,
     );
   }
 
@@ -1215,7 +1450,7 @@ export class ReferenceQueueRepository {
 
   private validScanLease(agentIdValue: string, slugValue: string, tokenValue: string): NicheRuntimeRow | null {
     const slug = normalizeCatalogSlug(slugValue);
-    return this.sql
+    const row = this.sql
       .exec<NicheRuntimeRow>(
         `SELECT * FROM ref4_niche_runtime
          WHERE slug = ? AND scan_lease_owner = ? AND scan_lease_token = ?
@@ -1225,7 +1460,15 @@ export class ReferenceQueueRepository {
         cleanText(tokenValue, 160),
         Date.now(),
       )
-      .toArray()[0] ?? null;
+      .toArray()[0];
+    if (!row) return null;
+    const disabled = this.sql
+      .exec<{ value: number }>(
+        "SELECT 1 AS value FROM ref4_disabled_niches WHERE slug = ? LIMIT 1",
+        row.slug,
+      )
+      .toArray()[0];
+    return disabled ? null : row;
   }
 
   private validUploadLease(agentIdValue: string, mediaIdValue: string, tokenValue: string): MediaRow | null {

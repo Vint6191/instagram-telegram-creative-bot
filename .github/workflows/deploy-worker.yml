@@ -158,9 +158,11 @@ jobs:
             if jq -e \
               --arg build "$GITHUB_SHA" \
               '.ok == true
-               and .appVersion == "4.0.2"
+               and .appVersion == "4.1.0"
                and .architecture == "creative-reference-split-v4"
                and .referenceProtocol == 5
+               and .referenceScan.order == "hot"
+               and .referenceScan.limit == 5
                and .buildId == $build
                and .references.catalogNiches == 473
                and .references.catalogStoredNiches == 473

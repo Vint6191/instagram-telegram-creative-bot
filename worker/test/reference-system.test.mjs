@@ -54,6 +54,7 @@ describe("reference repository integration", () => {
     repo.init();
 
     expect(repo.stats().catalogNiches).toBe(473);
+    expect(repo.stats().disabledNiches).toBe(0);
     expect(repo.stats().catalogStoredNiches).toBe(473);
     expect(repo.stats().catalogReady).toBe(true);
     expect(repo.listGroups()).toEqual([]);
@@ -64,7 +65,16 @@ describe("reference repository integration", () => {
     repo.toggleGroupNiche(group.chatId, "3-somes");
     repo.setEnabled(true);
 
+    db.prepare("UPDATE ref4_niche_runtime SET next_scan_at=9999999999999").run();
     db.prepare("UPDATE ref4_niche_runtime SET next_scan_at=0 WHERE slug='3-somes'").run();
+    expect(repo.setCatalogNicheEnabled("3-somes", false)).toBe(false);
+    expect(repo.stats().disabledNiches).toBe(1);
+    expect(repo.leaseScan("agent")).toBeNull();
+    repo.init();
+    expect(repo.stats().disabledNiches).toBe(1);
+    expect(repo.getGroup(group.chatId).niches).toContain("3-somes");
+    expect(repo.setCatalogNicheEnabled("3-somes", true)).toBe(true);
+    expect(repo.stats().disabledNiches).toBe(0);
     const scan = repo.leaseScan("agent");
     expect(scan?.slug).toBe("3-somes");
     expect(repo.leaseScan("agent")).toBeNull();
@@ -103,5 +113,50 @@ describe("reference repository integration", () => {
     repo.removeGroup(second.chatId);
     expect(repo.listGroups().some((item) => item.chatId === second.chatId)).toBe(false);
     expect(repo.reconcileDelivery(inFlight.id, "56")).toBe(true);
+  });
+
+  it("hard-limits discovered HOT results to five", () => {
+    const db = new DatabaseSync(":memory:");
+    const repo = new ReferenceQueueRepository(new SqlAdapter(db));
+    repo.init();
+    repo.setEnabled(true);
+    db.prepare("UPDATE ref4_niche_runtime SET next_scan_at=9999999999999").run();
+    db.prepare("UPDATE ref4_niche_runtime SET next_scan_at=0 WHERE slug='3-somes'").run();
+    const scan = repo.leaseScan("agent");
+    expect(scan?.slug).toBe("3-somes");
+    const uploads = repo.discover(
+      "agent",
+      scan.slug,
+      scan.leaseToken,
+      Array.from({ length: 9 }, (_, index) => ({
+        id: `hot${index + 1}`,
+        sourceUrl: `https://www.redgifs.com/watch/hot${index + 1}`,
+        niches: [{ slug: "3-somes", title: "3Somes" }],
+        hotRank: index + 1,
+      })),
+    );
+    expect(uploads).toHaveLength(5);
+  });
+
+  it("globally disables and restores a whole niche category without losing it", () => {
+    const db = new DatabaseSync(":memory:");
+    const repo = new ReferenceQueueRepository(new SqlAdapter(db));
+    repo.init();
+    const action = repo.listCatalogCategories().find((item) => item.key === "action");
+    expect(action?.count).toBe(214);
+
+    expect(repo.setCatalogCategoryEnabled("action", false)).toEqual({
+      enabledCount: 0,
+      disabledCount: 214,
+    });
+    expect(repo.stats().disabledNiches).toBe(214);
+    repo.init();
+    expect(repo.stats().disabledNiches).toBe(214);
+
+    expect(repo.setCatalogCategoryEnabled("action", true)).toEqual({
+      enabledCount: 214,
+      disabledCount: 0,
+    });
+    expect(repo.stats().disabledNiches).toBe(0);
   });
 });

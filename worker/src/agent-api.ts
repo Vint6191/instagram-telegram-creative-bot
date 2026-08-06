@@ -170,7 +170,7 @@ async function handleReferenceMutation(
     const nicheSlug = cleanText(body.nicheSlug, 120);
     const leaseToken = cleanText(body.leaseToken, 160);
     const items = Array.isArray(body.items)
-      ? body.items.filter(isRecord).slice(0, 10) as unknown as ReferenceDiscoveredItem[]
+      ? body.items.filter(isRecord).slice(0, 5) as unknown as ReferenceDiscoveredItem[]
       : [];
     if (!nicheSlug || !leaseToken) return referenceJson({ ok: false, error: "nicheSlug and leaseToken are required" }, 400);
     try {

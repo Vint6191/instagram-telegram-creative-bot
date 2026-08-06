@@ -15,6 +15,13 @@ export interface ReferenceCategoryRecord {
   selectedCount: number;
 }
 
+export interface ReferenceCatalogCategoryRecord {
+  key: string;
+  title: string;
+  count: number;
+  enabledCount: number;
+}
+
 export interface ReferenceDiscoveredItem {
   id: string;
   sourceUrl: string;
@@ -67,6 +74,7 @@ export interface ReferenceStats {
   groups: number;
   activeGroups: number;
   catalogNiches: number;
+  disabledNiches: number;
   catalogVersion: string;
   catalogStoredNiches: number;
   catalogReady: boolean;

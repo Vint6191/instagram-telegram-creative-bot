@@ -10,6 +10,7 @@ import type {
   QueueStats,
 } from "./types";
 import type {
+  ReferenceCatalogCategoryRecord,
   ReferenceCategoryRecord,
   ReferenceDeliveryLease,
   ReferenceDiscoveredItem,
@@ -120,6 +121,25 @@ export class JobQueue extends DurableObject<Env> {
 
   async listReferenceCategories(chatId: string): Promise<ReferenceCategoryRecord[]> {
     return this.references.listCategories(chatId);
+  }
+
+  async listReferenceCatalogCategories(): Promise<ReferenceCatalogCategoryRecord[]> {
+    return this.references.listCatalogCategories();
+  }
+
+  async listReferenceDisabledNiches(): Promise<string[]> {
+    return this.references.listDisabledNiches();
+  }
+
+  async setReferenceCatalogNicheEnabled(slug: string, enabled: boolean): Promise<boolean> {
+    return this.references.setCatalogNicheEnabled(slug, enabled);
+  }
+
+  async setReferenceCatalogCategoryEnabled(
+    category: string,
+    enabled: boolean,
+  ): Promise<{ enabledCount: number; disabledCount: number }> {
+    return this.references.setCatalogCategoryEnabled(category, enabled);
   }
 
   async setReferenceGroupNiche(

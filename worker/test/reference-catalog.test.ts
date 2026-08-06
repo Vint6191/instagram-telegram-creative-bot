@@ -32,6 +32,10 @@ describe("Telegram menu callbacks", () => {
       text: "test",
       callback_data: "r:nset:-1001234567890:473:1:7:999",
     }]])).not.toThrow();
+    expect(() => keyboard([[{
+      text: "global niche",
+      callback_data: "r:gnset:473:1:7:999",
+    }]])).not.toThrow();
   });
 
   it("rejects callback_data over Telegram's 64-byte limit", () => {

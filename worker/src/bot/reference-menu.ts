@@ -8,7 +8,11 @@ import { queueStub } from "../queue";
 import { ConfigStore } from "../store";
 import { escapeHtml, TelegramClient } from "../telegram";
 import type { Env, TargetRecord } from "../types";
-import type { ReferenceGroupRecord, ReferenceStats } from "../reference-types";
+import type {
+  ReferenceCatalogCategoryRecord,
+  ReferenceGroupRecord,
+  ReferenceStats,
+} from "../reference-types";
 import { clampPage, formatAge, keyboard, pagerRow, parsePage, type InlineButton } from "./ui";
 
 export class ReferenceMenu {
@@ -72,6 +76,31 @@ export class ReferenceMenu {
     if (data === "r:retry") {
       await queue.retryReferenceFailures();
       await this.editHome(chatId, messageId);
+      return true;
+    }
+    if (data.startsWith("r:gcats:")) {
+      await this.editCatalogCategories(chatId, messageId, parsePage(data.split(":")[2]));
+      return true;
+    }
+    if (data.startsWith("r:gniches:")) {
+      const [, , categoryRaw, pageRaw] = data.split(":");
+      await this.editCatalogNiches(chatId, messageId, Number(categoryRaw), parsePage(pageRaw));
+      return true;
+    }
+    if (data.startsWith("r:gnset:")) {
+      const [, , catalogIdRaw, enabledRaw, categoryRaw, pageRaw] = data.split(":");
+      const catalog = referenceCatalogById(Number(catalogIdRaw));
+      if (!catalog) throw new Error("Ниша не найдена в каталоге");
+      await queue.setReferenceCatalogNicheEnabled(catalog.slug, enabledRaw === "1");
+      await this.editCatalogNiches(chatId, messageId, Number(categoryRaw), parsePage(pageRaw));
+      return true;
+    }
+    if (data.startsWith("r:gcatset:")) {
+      const [, , categoryRaw, enabledRaw, pageRaw] = data.split(":");
+      const category = REFERENCE_CATEGORIES[Number(categoryRaw)];
+      if (!category) throw new Error("Категория не найдена");
+      await queue.setReferenceCatalogCategoryEnabled(category.key, enabledRaw === "1");
+      await this.editCatalogNiches(chatId, messageId, Number(categoryRaw), parsePage(pageRaw));
       return true;
     }
     if (data.startsWith("r:groups:")) {
@@ -164,6 +193,43 @@ export class ReferenceMenu {
     });
   }
 
+  private async editCatalogCategories(
+    chatId: string | number,
+    messageId: number,
+    page: number,
+  ): Promise<void> {
+    const categories = await queueStub(this.env).listReferenceCatalogCategories();
+    const safePage = clampPage(page, categories.length, 8);
+    await this.telegram.editMessageText(
+      chatId,
+      messageId,
+      catalogCategoriesText(categories),
+      { reply_markup: catalogCategoriesKeyboard(categories, safePage) },
+    );
+  }
+
+  private async editCatalogNiches(
+    chatId: string | number,
+    messageId: number,
+    categoryIndex: number,
+    page: number,
+  ): Promise<void> {
+    const category = REFERENCE_CATEGORIES[categoryIndex];
+    if (!category) throw new Error("Категория не найдена");
+    const [disabledNiches] = await Promise.all([
+      queueStub(this.env).listReferenceDisabledNiches(),
+    ]);
+    const disabled = new Set(disabledNiches);
+    const items = referenceCategoryItems(category.key);
+    const safePage = clampPage(page, items.length, 8);
+    await this.telegram.editMessageText(
+      chatId,
+      messageId,
+      catalogNichesText(category.title, items.length, items.filter((item) => !disabled.has(item.slug)).length),
+      { reply_markup: catalogNichesKeyboard(items, disabled, categoryIndex, safePage) },
+    );
+  }
+
   private async editGroup(chatId: string | number, messageId: number, groupId: string): Promise<void> {
     const group = await queueStub(this.env).getReferenceGroup(groupId);
     await this.telegram.editMessageText(chatId, messageId, groupText(group), {
@@ -220,7 +286,8 @@ function referenceHomeText(stats: ReferenceStats, warehouse: TargetRecord | null
     `Сбор: <b>${state}</b>`,
     `Склад: <b>${warehouse ? escapeHtml(warehouse.title) : "не назначен"}</b>`,
     `Групп моделей: <b>${stats.groups}</b> · активных <b>${stats.activeGroups}</b>`,
-    `Утверждённых ниш: <b>${stats.catalogNiches}</b>`,
+    `Ниши: <b>${stats.catalogNiches - stats.disabledNiches}</b> активных · <b>${stats.disabledNiches}</b> отключено`,
+    `Скан: <b>только HOT · по 5 роликов с ниши</b>`,
     `На складе: <b>${stats.storedMedia}</b>`,
     `Ждут загрузки: <b>${stats.pendingUploads}</b>`,
     `Ждут отправки: <b>${stats.pendingDeliveries}</b>`,
@@ -235,6 +302,7 @@ function referenceHomeText(stats: ReferenceStats, warehouse: TargetRecord | null
 function referenceHomeKeyboard(stats: ReferenceStats): Record<string, unknown> {
   const rows: InlineButton[][] = [
     [{ text: "👥 Группы моделей", callback_data: "r:groups:0" }],
+    [{ text: "🗂 Включить / отключить ниши", callback_data: "r:gcats:0" }],
     [
       { text: "➕ Добавить группу", callback_data: "r:add" },
       { text: "📦 Склад", callback_data: "r:warehouse" },
@@ -250,6 +318,76 @@ function referenceHomeKeyboard(stats: ReferenceStats): Record<string, unknown> {
     },
   ]);
   rows.push([{ text: "← Главное меню", callback_data: "m:home" }]);
+  return keyboard(rows);
+}
+
+function catalogCategoriesText(categories: ReferenceCatalogCategoryRecord[]): string {
+  const total = categories.reduce((sum, category) => sum + category.count, 0);
+  const enabled = categories.reduce((sum, category) => sum + category.enabledCount, 0);
+  return [
+    "<b>🗂 Глобальный каталог ниш</b>",
+    "",
+    `Активно: <b>${enabled}/${total}</b>`,
+    "",
+    "Отключённые здесь ниши вообще не сканируются и не создают новые отправки. Настройки групп при этом сохраняются.",
+    "",
+    ...categories.map((category) =>
+      `• ${escapeHtml(category.title)} — <b>${category.enabledCount}/${category.count}</b>`,
+    ),
+  ].join("\n");
+}
+
+function catalogCategoriesKeyboard(
+  categories: ReferenceCatalogCategoryRecord[],
+  page: number,
+): Record<string, unknown> {
+  const pageSize = 8;
+  const rows: InlineButton[][] = categories
+    .slice(page * pageSize, page * pageSize + pageSize)
+    .map((category, offset) => {
+      const index = page * pageSize + offset;
+      return [{
+        text: `${category.enabledCount === category.count ? "✅" : category.enabledCount === 0 ? "⛔" : "◐"} ${category.title} · ${category.enabledCount}/${category.count}`.slice(0, 58),
+        callback_data: `r:gniches:${index}:0`,
+      }];
+    });
+  rows.push(pagerRow("r:gcats", page, categories.length, pageSize));
+  rows.push([{ text: "← Референсы", callback_data: "r:home" }]);
+  return keyboard(rows);
+}
+
+function catalogNichesText(categoryTitle: string, total: number, enabled: number): string {
+  return [
+    `<b>${escapeHtml(categoryTitle)}</b>`,
+    "Глобальный каталог",
+    "",
+    `Активно: <b>${enabled}/${total}</b>. Из активной ниши берём только HOT-5.`,
+    "Отключение применяется сразу ко всем группам.",
+  ].join("\n");
+}
+
+function catalogNichesKeyboard(
+  items: Array<{ id: number; slug: string; title: string }>,
+  disabled: Set<string>,
+  categoryIndex: number,
+  page: number,
+): Record<string, unknown> {
+  const pageSize = 8;
+  const rows: InlineButton[][] = items
+    .slice(page * pageSize, page * pageSize + pageSize)
+    .map((item) => {
+      const enabled = !disabled.has(item.slug);
+      return [{
+        text: `${enabled ? "✅" : "⛔"} ${item.title}`.slice(0, 58),
+        callback_data: `r:gnset:${item.id}:${enabled ? 0 : 1}:${categoryIndex}:${page}`,
+      }];
+    });
+  rows.push(pagerRow(`r:gniches:${categoryIndex}`, page, items.length, pageSize));
+  rows.push([
+    { text: "✅ Включить все", callback_data: `r:gcatset:${categoryIndex}:1:${page}` },
+    { text: "⛔ Отключить все", callback_data: `r:gcatset:${categoryIndex}:0:${page}` },
+  ]);
+  rows.push([{ text: "← Категории", callback_data: "r:gcats:0" }]);
   return keyboard(rows);
 }
 

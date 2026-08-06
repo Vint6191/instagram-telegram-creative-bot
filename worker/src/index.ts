@@ -46,7 +46,7 @@ async function routeRequest(
     return Response.json(
       {
         ok: true,
-        appVersion: "4.0.1",
+        appVersion: "4.0.2",
         architecture: "creative-reference-split-v4",
         referenceProtocol: REFERENCE_PROTOCOL_VERSION,
         buildId: env.BUILD_ID?.trim() || "local",

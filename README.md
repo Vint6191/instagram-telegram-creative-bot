@@ -54,7 +54,7 @@ Workflow сам находит/создаёт KV, деплоит Durable Object 
 
 После деплоя `/health` должен вернуть:
 
-- `appVersion: 4.0.1`
+- `appVersion: 4.0.2`
 - `architecture: creative-reference-split-v4`
 - `referenceProtocol: 5`
 - `buildId: <точный Git commit SHA>`

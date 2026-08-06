@@ -158,7 +158,7 @@ jobs:
             if jq -e \
               --arg build "$GITHUB_SHA" \
               '.ok == true
-               and .appVersion == "4.0.1"
+               and .appVersion == "4.0.2"
                and .architecture == "creative-reference-split-v4"
                and .referenceProtocol == 5
                and .buildId == $build

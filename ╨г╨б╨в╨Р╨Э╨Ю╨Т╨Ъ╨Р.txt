@@ -11,7 +11,7 @@
    - Commit + Push в main;
    - дождаться зелёного Deploy Telegram queue worker;
    - открыть https://instagram-creative-bot.hellvint6191.workers.dev/health;
-   - проверить appVersion=4.0.1, architecture=creative-reference-split-v4,
+   - проверить appVersion=4.0.2, architecture=creative-reference-split-v4,
      referenceProtocol=5, catalogNiches=473, catalogStoredNiches=473, catalogReady=true.
 
 3. DESKTOP:

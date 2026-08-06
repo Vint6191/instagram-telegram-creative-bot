@@ -14,6 +14,12 @@ class SqlAdapter {
   }
 
   exec(query, ...bindings) {
+    // Match Cloudflare Durable Object SQLite instead of Node SQLite's much
+    // larger default parameter limit. This makes catalog seeding fail locally
+    // if a future change exceeds Cloudflare's production limit again.
+    if (bindings.length > 100) {
+      throw new Error(`Cloudflare SQL bind limit exceeded: ${bindings.length} > 100`);
+    }
     const trimmed = query.trim();
     let rows = [];
     if (bindings.length === 0 && trimmed.includes(";")) {

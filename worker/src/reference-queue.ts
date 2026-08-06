@@ -89,6 +89,14 @@ const UPLOAD_LEASE_MS = 20 * 60 * 1000;
 const DELIVERY_LEASE_MS = 5 * 60 * 1000;
 const MAX_ATTEMPTS = 7;
 
+// Cloudflare Durable Object SQLite accepts at most 100 bound parameters
+// per query. Catalog rows use 6 bindings each, so 16 rows = 96 bindings.
+const CLOUDFLARE_SQL_MAX_BINDINGS = 100;
+const CATALOG_BINDINGS_PER_ROW = 6;
+const CATALOG_INSERT_CHUNK_SIZE = Math.floor(
+  CLOUDFLARE_SQL_MAX_BINDINGS / CATALOG_BINDINGS_PER_ROW,
+);
+
 export class ReferenceQueueRepository {
   constructor(private readonly sql: DurableObjectSqlStorage) {}
 
@@ -967,9 +975,15 @@ export class ReferenceQueueRepository {
     if (currentVersion === REFERENCE_CATALOG_VERSION && currentCount === REFERENCE_CATALOG_COUNT) return;
     const now = Date.now();
     this.sql.exec("DELETE FROM ref4_catalog");
-    const chunkSize = 100;
-    for (let offset = 0; offset < REFERENCE_CATALOG.length; offset += chunkSize) {
-      const chunk = REFERENCE_CATALOG.slice(offset, offset + chunkSize);
+    for (
+      let offset = 0;
+      offset < REFERENCE_CATALOG.length;
+      offset += CATALOG_INSERT_CHUNK_SIZE
+    ) {
+      const chunk = REFERENCE_CATALOG.slice(
+        offset,
+        offset + CATALOG_INSERT_CHUNK_SIZE,
+      );
       const placeholders = chunk.map(() => "(?, ?, ?, ?, ?, ?)").join(", ");
       const bindings: Array<string | number> = [];
       for (const item of chunk) {

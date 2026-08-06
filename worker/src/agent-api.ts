@@ -128,21 +128,22 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
     if (!lease) {
       return json({ ok: true, upload: null, references: await queue.referenceStats() });
     }
-    const rootAdminId = await new ConfigStore(env.CONFIG, env.ROOT_ADMIN_ID).getRootAdminId();
-    if (!rootAdminId) {
+    const store = new ConfigStore(env.CONFIG, env.ROOT_ADMIN_ID);
+    const warehouse = await store.getWarehouse();
+    if (!warehouse) {
       await queue.failReferenceUpload(
         LOCAL_AGENT_ID,
         lease.id,
         lease.leaseToken,
-        "Root admin is not configured",
+        "Warehouse chat is not configured",
         600,
       );
-      return json({ ok: false, error: "Владелец бота не назначен" }, 409);
+      return json({ ok: false, error: "Склад референсов не назначен" }, 409);
     }
     return json({
       ok: true,
       upload: lease,
-      warehouseChatId: rootAdminId,
+      warehouseChatId: warehouse.chatId,
       telegramBotToken: telegramBotToken(env),
       references: await queue.referenceStats(),
     });
@@ -214,6 +215,8 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
     const leaseToken = text(body.leaseToken, 160);
     const fileId = text(body.fileId, 600);
     const fileUniqueId = text(body.fileUniqueId, 600);
+    const warehouseChatId = text(body.warehouseChatId, 80);
+    const warehouseMessageId = text(body.warehouseMessageId, 80);
     if (!mediaId || !leaseToken || !fileId) {
       return json({ ok: false, error: "mediaId, leaseToken and fileId are required" }, 400);
     }
@@ -223,6 +226,8 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
       leaseToken,
       fileId,
       fileUniqueId || undefined,
+      warehouseChatId || undefined,
+      warehouseMessageId || undefined,
     );
     return result ? json({ ok: true, ...result }) : json({ ok: false, error: "Upload lease expired" }, 409);
   }
@@ -242,8 +247,16 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
     const mediaId = text(body.mediaId, 160);
     const fileId = text(body.fileId, 600);
     const fileUniqueId = text(body.fileUniqueId, 600);
+    const warehouseChatId = text(body.warehouseChatId, 80);
+    const warehouseMessageId = text(body.warehouseMessageId, 80);
     if (!mediaId || !fileId) return json({ ok: false, error: "mediaId and fileId are required" }, 400);
-    const result = await queue.storeReferenceMedia(mediaId, fileId, fileUniqueId || undefined);
+    const result = await queue.storeReferenceMedia(
+      mediaId,
+      fileId,
+      fileUniqueId || undefined,
+      warehouseChatId || undefined,
+      warehouseMessageId || undefined,
+    );
     return json({ ok: true, ...result });
   }
 

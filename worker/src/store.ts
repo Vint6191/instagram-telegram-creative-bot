@@ -8,6 +8,7 @@ import type {
 const USER_PREFIX = "user:";
 const INVITE_PREFIX = "invite:";
 const TARGET_KEY = "settings:target";
+const WAREHOUSE_KEY = "settings:warehouse";
 const ROOT_ADMIN_KEY = "settings:root-admin";
 const BOT_KEY = "meta:bot";
 const UPDATE_PREFIX = "update:";
@@ -144,6 +145,18 @@ export class ConfigStore {
 
   async clearTarget(): Promise<void> {
     await this.kv.delete(TARGET_KEY);
+  }
+
+  async getWarehouse(): Promise<TargetRecord | null> {
+    return this.kv.get<TargetRecord>(WAREHOUSE_KEY, "json");
+  }
+
+  async setWarehouse(target: TargetRecord): Promise<void> {
+    await this.kv.put(WAREHOUSE_KEY, JSON.stringify(target));
+  }
+
+  async clearWarehouse(): Promise<void> {
+    await this.kv.delete(WAREHOUSE_KEY);
   }
 
   async getBotIdentity(): Promise<{ id: string; username?: string } | null> {

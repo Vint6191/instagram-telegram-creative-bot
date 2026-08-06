@@ -26,6 +26,8 @@ const CALLBACK = {
   INVITE: "users:invite",
   CLEAR_TARGET: "target:clear",
   QUEUE: "settings:queue",
+  WAREHOUSE: "settings:warehouse",
+  CLEAR_WAREHOUSE: "warehouse:clear",
   REFS: "refs:home",
 } as const;
 
@@ -68,15 +70,13 @@ export class UpdateHandler {
       if (forwardedChat && ["channel", "group", "supergroup"].includes(forwardedChat.type)) {
         await this.telegram.sendMessage(
           message.chat.id,
-          `Назначить <b>${escapeHtml(chatDisplayName(forwardedChat))}</b> местом публикации?`,
+          `Что сделать с <b>${escapeHtml(chatDisplayName(forwardedChat))}</b>?`,
           {
             reply_markup: {
               inline_keyboard: [
                 [
-                  {
-                    text: "✅ Назначить",
-                    callback_data: `target:set:${forwardedChat.id}`,
-                  },
+                  { text: "📣 Публикация", callback_data: `target:set:${forwardedChat.id}` },
+                  { text: "🎞 Склад", callback_data: `warehouse:set:${forwardedChat.id}` },
                 ],
               ],
             },
@@ -168,6 +168,23 @@ export class UpdateHandler {
         await this.handleSetTargetCommand(message, args);
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Не удалось назначить чат";
+        await this.telegram.sendMessage(
+          message.chat.id,
+          `❌ ${escapeHtml(reason)}`,
+        );
+      }
+      return;
+    }
+
+    if (name === "setwarehouse") {
+      if (!(await this.store.isRootAdmin(user.id))) {
+        await this.telegram.sendMessage(message.chat.id, "Эта команда доступна только владельцу бота.");
+        return;
+      }
+      try {
+        await this.handleSetWarehouseCommand(message, args);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Не удалось назначить склад";
         await this.telegram.sendMessage(
           message.chat.id,
           `❌ ${escapeHtml(reason)}`,
@@ -355,6 +372,36 @@ export class UpdateHandler {
     );
   }
 
+  private async handleSetWarehouseCommand(
+    message: TelegramMessage,
+    args: string,
+  ): Promise<void> {
+    if (["group", "supergroup", "channel"].includes(message.chat.type)) {
+      await this.saveWarehouse(message.chat, String(message.from?.id ?? "unknown"));
+      await this.telegram.sendMessage(
+        message.chat.id,
+        `Готово. Склад референсов: <b>${escapeHtml(chatDisplayName(message.chat))}</b>.`,
+      );
+      return;
+    }
+
+    const targetId = args.trim();
+    if (/^-?\d+$/u.test(targetId)) {
+      const chat = await this.telegram.getChat(targetId);
+      await this.saveWarehouse(chat, String(message.from?.id ?? "unknown"));
+      await this.telegram.sendMessage(
+        message.chat.id,
+        `Готово. Склад референсов: <b>${escapeHtml(chatDisplayName(chat))}</b>.`,
+      );
+      return;
+    }
+
+    await this.telegram.sendMessage(
+      message.chat.id,
+      "Для склада: создай закрытый канал, добавь туда бота администратором с правом публикации и перешли сюда любой пост из этого канала. Либо используй <code>/setwarehouse CHAT_ID</code>.",
+    );
+  }
+
   private async enqueueDownload(
     message: TelegramMessage,
     user: TelegramUser,
@@ -443,12 +490,23 @@ export class UpdateHandler {
           queueStatusText(stats),
           { reply_markup: backKeyboard() },
         );
+      } else if (data === CALLBACK.WAREHOUSE) {
+        const warehouse = await this.store.getWarehouse();
+        await this.telegram.editMessageText(
+          chatId,
+          messageId,
+          warehouseText(warehouse),
+          { reply_markup: warehouseKeyboard(Boolean(warehouse)) },
+        );
       } else if (data === CALLBACK.INVITE) {
         await this.telegram.answerCallbackQuery(query.id);
         await this.sendInvite(chatId, query.from.id);
         return;
       } else if (data === CALLBACK.CLEAR_TARGET) {
         await this.store.clearTarget();
+        await this.editSettings(chatId, messageId);
+      } else if (data === CALLBACK.CLEAR_WAREHOUSE) {
+        await this.store.clearWarehouse();
         await this.editSettings(chatId, messageId);
       } else if (data.startsWith("users:remove:")) {
         const userId = data.slice("users:remove:".length);
@@ -510,14 +568,16 @@ export class UpdateHandler {
 
   private async sendReferencesHome(chatId: string | number): Promise<void> {
     const stats = await queueStub(this.env).referenceStats();
-    await this.telegram.sendMessage(chatId, referencesHomeText(stats), {
+    const warehouse = await this.store.getWarehouse();
+    await this.telegram.sendMessage(chatId, referencesHomeText(stats, warehouse), {
       reply_markup: referencesHomeKeyboard(),
     });
   }
 
   private async editReferencesHome(chatId: string | number, messageId: number): Promise<void> {
     const stats = await queueStub(this.env).referenceStats();
-    await this.telegram.editMessageText(chatId, messageId, referencesHomeText(stats), {
+    const warehouse = await this.store.getWarehouse();
+    await this.telegram.editMessageText(chatId, messageId, referencesHomeText(stats, warehouse), {
       reply_markup: referencesHomeKeyboard(),
     });
   }
@@ -573,17 +633,19 @@ export class UpdateHandler {
 
   private async sendSettings(chatId: string | number): Promise<void> {
     const target = await this.store.getTarget();
+    const warehouse = await this.store.getWarehouse();
     const users = await this.store.listAuthorizedUsers();
-    await this.telegram.sendMessage(chatId, settingsText(target, users.length), {
-      reply_markup: settingsKeyboard(Boolean(target)),
+    await this.telegram.sendMessage(chatId, settingsText(target, warehouse, users.length), {
+      reply_markup: settingsKeyboard(Boolean(target), Boolean(warehouse)),
     });
   }
 
   private async editSettings(chatId: string | number, messageId: number): Promise<void> {
     const target = await this.store.getTarget();
+    const warehouse = await this.store.getWarehouse();
     const users = await this.store.listAuthorizedUsers();
-    await this.telegram.editMessageText(chatId, messageId, settingsText(target, users.length), {
-      reply_markup: settingsKeyboard(Boolean(target)),
+    await this.telegram.editMessageText(chatId, messageId, settingsText(target, warehouse, users.length), {
+      reply_markup: settingsKeyboard(Boolean(target), Boolean(warehouse)),
     });
   }
 
@@ -660,6 +722,40 @@ export class UpdateHandler {
     });
   }
 
+  private async saveWarehouse(chat: TelegramChat, configuredBy: string): Promise<void> {
+    if (!['group', 'supergroup', 'channel'].includes(chat.type)) {
+      throw new Error('Warehouse must be a group, supergroup or channel');
+    }
+
+    const bot = await this.getBotIdentity();
+    const membership = await this.telegram.getChatMember(chat.id, bot.id);
+    const status = String(membership.status ?? '');
+
+    if (chat.type === 'channel') {
+      if (status !== 'administrator' && status !== 'creator') {
+        throw new Error('Бот должен быть администратором канала');
+      }
+      if (membership.can_post_messages === false) {
+        throw new Error('У бота нет права публиковать в канале');
+      }
+    } else if (status === 'restricted') {
+      if (membership.can_send_messages !== true) {
+        throw new Error('У бота нет права отправлять сообщения в этой группе');
+      }
+    } else if (!['member', 'administrator', 'creator'].includes(status)) {
+      throw new Error('Бот не состоит в этой группе');
+    }
+
+    await this.store.setWarehouse({
+      chatId: String(chat.id),
+      type: chat.type,
+      title: chatDisplayName(chat),
+      configuredAt: new Date().toISOString(),
+      configuredBy,
+      ...(chat.username ? { username: chat.username } : {}),
+    });
+  }
+
   private async getBotIdentity(): Promise<{ id: string; username?: string }> {
     const cached = await this.store.getBotIdentity();
     if (cached) return cached;
@@ -695,27 +791,39 @@ function getForwardedChat(message: TelegramMessage): TelegramChat | null {
   return null;
 }
 
-function settingsText(target: TargetRecord | null, userCount: number): string {
+function settingsText(
+  target: TargetRecord | null,
+  warehouse: TargetRecord | null,
+  userCount: number,
+): string {
   const targetText = target ? escapeHtml(target.title) : "не назначено";
+  const warehouseTextValue = warehouse ? escapeHtml(warehouse.title) : "не назначен";
   return [
     "<b>Настройки</b>",
     "",
     `👥 Могут отправлять: <b>${userCount + 1}</b>`,
     `📣 Публикация: <b>${targetText}</b>`,
+    `🎞 Склад референсов: <b>${warehouseTextValue}</b>`,
   ].join("\n");
 }
 
-function settingsKeyboard(hasTarget: boolean): Record<string, unknown> {
+function settingsKeyboard(hasTarget: boolean, hasWarehouse: boolean): Record<string, unknown> {
   const rows: Array<Array<Record<string, string>>> = [
     [
       { text: "👥 Пользователи", callback_data: CALLBACK.USERS },
-      { text: "📣 Куда публиковать", callback_data: CALLBACK.TARGET },
+      { text: "📋 Очередь", callback_data: CALLBACK.QUEUE },
     ],
-    [{ text: "📋 Очередь", callback_data: CALLBACK.QUEUE }],
+    [
+      { text: "📣 Публикация", callback_data: CALLBACK.TARGET },
+      { text: "🎞 Склад", callback_data: CALLBACK.WAREHOUSE },
+    ],
     [{ text: "🎬 Референсы", callback_data: "rh" }],
   ];
   if (hasTarget) {
     rows.push([{ text: "Сбросить место публикации", callback_data: CALLBACK.CLEAR_TARGET }]);
+  }
+  if (hasWarehouse) {
+    rows.push([{ text: "Сбросить склад", callback_data: CALLBACK.CLEAR_WAREHOUSE }]);
   }
   return { inline_keyboard: rows };
 }
@@ -748,6 +856,30 @@ function usersKeyboard(users: Array<{ id: string; username?: string; firstName: 
   return { inline_keyboard: rows };
 }
 
+function warehouseText(warehouse: TargetRecord | null): string {
+  return [
+    "<b>Склад референсов</b>",
+    "",
+    `Текущий склад: <b>${warehouse ? escapeHtml(warehouse.title) : "не назначен"}</b>`,
+    "",
+    "Как назначить:",
+    "1. Создай закрытый канал или группу для склада.",
+    "2. Добавь туда бота с правом публиковать сообщения.",
+    "3. Перешли боту любой пост из этого канала и выбери «Склад».",
+    "",
+    "Можно и вручную: <code>/setwarehouse CHAT_ID</code>.",
+  ].join("\n");
+}
+
+function warehouseKeyboard(hasWarehouse: boolean): Record<string, unknown> {
+  const rows: Array<Array<Record<string, string>>> = [];
+  if (hasWarehouse) {
+    rows.push([{ text: "Сбросить склад", callback_data: CALLBACK.CLEAR_WAREHOUSE }]);
+  }
+  rows.push([{ text: "← Назад", callback_data: CALLBACK.HOME }]);
+  return { inline_keyboard: rows };
+}
+
 function referencesHomeText(stats: {
   models: number;
   activeNiches: number;
@@ -759,7 +891,7 @@ function referencesHomeText(stats: {
   pendingUploads: number;
   pendingDeliveries: number;
   sentDeliveries: number;
-}): string {
+}, warehouse: TargetRecord | null): string {
   const catalogState = stats.catalogPending
     ? "⏳ обновляется"
     : stats.catalogSyncedAt
@@ -770,11 +902,14 @@ function referencesHomeText(stats: {
     "",
     `👤 Моделей: <b>${stats.models}</b>`,
     `🔥 Ниш RedGIFs: <b>${stats.catalogNiches}</b> · ${catalogState}`,
+    `🎞 Склад: <b>${warehouse ? escapeHtml(warehouse.title) : "не назначен"}</b>`,
     `🎞 На складе: <b>${stats.storedMedia}</b>`,
     `⬇️ Ждут загрузки: <b>${stats.pendingUploads}</b>`,
     `📤 В очереди моделям: <b>${stats.pendingDeliveries}</b>`,
     `✅ Отправлено: <b>${stats.sentDeliveries}</b>`,
     ...(stats.catalogError ? ["", `⚠️ ${escapeHtml(stats.catalogError)}`] : []),
+    "",
+    "Склад задаётся владельцем: создай закрытый канал, добавь туда бота администратором, перешли боту любой пост из этого канала и нажми «Склад».",
     "",
     "Добавь бота в рабочий чат модели и отправь там <code>/model Имя</code>. Затем открой модель здесь и отметь нужные ниши галочками.",
   ].join("\n");
@@ -863,7 +998,7 @@ function referenceNichesText(
   return [
     "<b>Все ниши RedGIFs</b>",
     "",
-    `Получено автоматически: <b>${niches.length}</b>. Из каждой ниши раз в час берётся HOT-10.`,
+    `Кураторский список: <b>${niches.length}</b>. В список попадают только одобренные ниши; из каждой раз в час берётся HOT-10.`,
     "",
     ...visible.map(
       (niche) => `• ${escapeHtml(niche.title)} — роликов: <b>${niche.mediaCount}</b>, моделей: <b>${niche.modelCount}</b>`,

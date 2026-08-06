@@ -19,6 +19,7 @@ import type {
   ReferenceUploadLease,
   ReferenceUploadTask,
 } from "./reference-types";
+import { CURATED_REFERENCE_NICHES, isCuratedReferenceNiche } from "./reference-curated";
 
 interface JobRow {
   id: string;
@@ -96,6 +97,8 @@ interface ReferenceMediaRow {
   duration: number | null;
   file_id: string | null;
   file_unique_id: string | null;
+  warehouse_chat_id: string | null;
+  warehouse_message_id: string | null;
   upload_status: string;
   upload_attempt_count: number;
   upload_available_at: number;
@@ -238,6 +241,8 @@ export class JobQueue extends DurableObject<Env> {
           duration INTEGER,
           file_id TEXT,
           file_unique_id TEXT,
+          warehouse_chat_id TEXT,
+          warehouse_message_id TEXT,
           upload_status TEXT NOT NULL DEFAULT 'pending',
           upload_attempt_count INTEGER NOT NULL DEFAULT 0,
           upload_available_at INTEGER NOT NULL DEFAULT 0,
@@ -289,6 +294,8 @@ export class JobQueue extends DurableObject<Env> {
       // References build. Duplicate-column errors simply mean the column exists.
       for (const statement of [
         "ALTER TABLE reference_media ADD COLUMN download_url TEXT",
+        "ALTER TABLE reference_media ADD COLUMN warehouse_chat_id TEXT",
+        "ALTER TABLE reference_media ADD COLUMN warehouse_message_id TEXT",
         "ALTER TABLE reference_media ADD COLUMN upload_status TEXT NOT NULL DEFAULT 'pending'",
         "ALTER TABLE reference_media ADD COLUMN upload_attempt_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE reference_media ADD COLUMN upload_available_at INTEGER NOT NULL DEFAULT 0",
@@ -609,7 +616,7 @@ export class JobQueue extends DurableObject<Env> {
     const normalized = new Map<string, ReferenceCatalogItem>();
     for (const raw of items.slice(0, 2500)) {
       const slug = normalizeNicheSlug(raw.slug);
-      if (!slug) continue;
+      if (!slug || !isCuratedReferenceNiche(slug)) continue;
       const title = cleanText(raw.title, 100) || titleFromSlug(slug);
       const thumbnailUrl = cleanOptional(raw.thumbnailUrl, 1000);
       const current = normalized.get(slug);
@@ -621,7 +628,7 @@ export class JobQueue extends DurableObject<Env> {
         });
       }
     }
-    if (normalized.size === 0) throw new Error("Каталог RedGIFs пуст");
+    if (normalized.size === 0) throw new Error("Каталог RedGIFs пуст после кураторской фильтрации");
 
     const completeSnapshot = completeSnapshotValue && normalized.size >= 20;
     const generation = Number(state.generation ?? 0) + 1;
@@ -647,6 +654,8 @@ export class JobQueue extends DurableObject<Env> {
         now,
       );
     }
+
+    this.pruneUncuratedReferenceData();
 
     if (completeSnapshot) {
       // Three consecutive complete catalog snapshots must miss a niche before
@@ -720,6 +729,7 @@ export class JobQueue extends DurableObject<Env> {
   async registerReferenceNiche(slugValue: string, titleValue: string): Promise<ReferenceNicheRecord> {
     const slug = normalizeNicheSlug(slugValue);
     if (!slug) throw new Error("Некорректная ниша RedGIFs");
+    if (!isCuratedReferenceNiche(slug)) throw new Error("Эта ниша исключена из кураторского списка");
     const title = cleanText(titleValue, 80) || titleFromSlug(slug);
     const now = Date.now();
     this.ctx.storage.sql.exec(
@@ -738,6 +748,7 @@ export class JobQueue extends DurableObject<Env> {
   async setReferenceNicheActive(slugValue: string, active: boolean): Promise<ReferenceNicheRecord> {
     const slug = normalizeNicheSlug(slugValue);
     if (!slug) throw new Error("Некорректная ниша RedGIFs");
+    if (!isCuratedReferenceNiche(slug)) throw new Error("Эта ниша исключена из кураторского списка");
     this.ctx.storage.sql.exec(
       `UPDATE reference_niches SET active = ?, next_scan_at = CASE WHEN ? = 1 THEN 0 ELSE next_scan_at END
        WHERE slug = ?`,
@@ -821,6 +832,7 @@ export class JobQueue extends DurableObject<Env> {
     const chatId = cleanText(chatIdValue, 40);
     const slug = normalizeNicheSlug(slugValue);
     if (!slug) throw new Error("Некорректная ниша RedGIFs");
+    if (!isCuratedReferenceNiche(slug)) throw new Error("Эта ниша исключена из кураторского списка");
     const model = this.ctx.storage.sql
       .exec<ReferenceModelRow>("SELECT * FROM reference_models WHERE chat_id = ?", chatId)
       .toArray()[0];
@@ -1170,10 +1182,18 @@ export class JobQueue extends DurableObject<Env> {
     leaseTokenValue: string,
     fileIdValue: string,
     fileUniqueIdValue?: string,
+    warehouseChatIdValue?: string,
+    warehouseMessageIdValue?: string,
   ): Promise<{ queuedDeliveries: number } | null> {
     const row = this.validReferenceUploadLease(agentIdValue, mediaIdValue, leaseTokenValue);
     if (!row) return null;
-    return this.storeReferenceMedia(row.id, fileIdValue, fileUniqueIdValue);
+    return this.storeReferenceMedia(
+      row.id,
+      fileIdValue,
+      fileUniqueIdValue,
+      warehouseChatIdValue,
+      warehouseMessageIdValue,
+    );
   }
 
   async failReferenceUpload(
@@ -1206,6 +1226,8 @@ export class JobQueue extends DurableObject<Env> {
     mediaIdValue: string,
     fileIdValue: string,
     fileUniqueIdValue?: string,
+    warehouseChatIdValue?: string,
+    warehouseMessageIdValue?: string,
   ): Promise<{ queuedDeliveries: number }> {
     const mediaId = normalizeMediaId(mediaIdValue);
     const fileId = cleanText(fileIdValue, 500);
@@ -1213,12 +1235,15 @@ export class JobQueue extends DurableObject<Env> {
     const now = Date.now();
     this.ctx.storage.sql.exec(
       `UPDATE reference_media SET
-        file_id = ?, file_unique_id = ?, stored_at = ?, updated_at = ?,
+        file_id = ?, file_unique_id = ?, warehouse_chat_id = COALESCE(?, warehouse_chat_id),
+        warehouse_message_id = COALESCE(?, warehouse_message_id), stored_at = ?, updated_at = ?,
         upload_status = 'stored', upload_error = NULL,
         upload_lease_owner = NULL, upload_lease_token = NULL, upload_lease_expires_at = NULL
        WHERE id = ?`,
       fileId,
       cleanOptional(fileUniqueIdValue, 500) ?? null,
+      cleanOptional(warehouseChatIdValue, 80) ?? null,
+      cleanOptional(warehouseMessageIdValue, 80) ?? null,
       now,
       now,
       mediaId,
@@ -1448,6 +1473,46 @@ export class JobQueue extends DurableObject<Env> {
     );
   }
 
+  private pruneUncuratedReferenceData(): void {
+    const affectedMediaIds = new Set<string>();
+    const excluded = this.ctx.storage.sql
+      .exec<{ slug: string }>("SELECT slug FROM reference_niches")
+      .toArray()
+      .map((row) => row.slug)
+      .filter((slug) => !CURATED_REFERENCE_NICHES.has(slug));
+
+    for (const slug of excluded) {
+      this.ctx.storage.sql
+        .exec<{ media_id: string }>(
+          "SELECT DISTINCT media_id FROM reference_media_niches WHERE niche_slug = ?",
+          slug,
+        )
+        .toArray()
+        .forEach((row) => affectedMediaIds.add(row.media_id));
+      this.ctx.storage.sql.exec("DELETE FROM reference_model_niches WHERE niche_slug = ?", slug);
+      this.ctx.storage.sql.exec("DELETE FROM reference_media_niches WHERE niche_slug = ?", slug);
+      this.ctx.storage.sql.exec(
+        "UPDATE reference_niches SET active = 0, catalog_present = 0 WHERE slug = ?",
+        slug,
+      );
+    }
+
+    for (const mediaId of affectedMediaIds) {
+      this.refreshReferenceNichesJson(mediaId);
+    }
+
+    this.ctx.storage.sql.exec(
+      `DELETE FROM reference_deliveries
+       WHERE status != 'sent'
+         AND NOT EXISTS (
+           SELECT 1 FROM reference_media_niches rm
+           JOIN reference_model_niches mn ON mn.niche_slug = rm.niche_slug
+           WHERE rm.media_id = reference_deliveries.media_id
+             AND mn.model_chat_id = reference_deliveries.model_chat_id
+         )`,
+    );
+  }
+
   private validReferenceCatalogLease(
     agentIdValue: string,
     tokenValue: string,
@@ -1473,7 +1538,7 @@ export class JobQueue extends DurableObject<Env> {
     now: number,
   ): void {
     const slug = normalizeNicheSlug(niche.slug);
-    if (!slug) return;
+    if (!slug || !isCuratedReferenceNiche(slug)) return;
     const title = cleanText(niche.title, 100) || titleFromSlug(slug);
     const thumbnailUrl = cleanOptional(niche.thumbnailUrl, 1000) ?? null;
     this.ctx.storage.sql.exec(

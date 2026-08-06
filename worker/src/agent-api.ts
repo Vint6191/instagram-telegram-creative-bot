@@ -8,6 +8,7 @@ import type { Env, QueueJobRecord, QueueStage } from "./types";
 
 const APP_VERSION_HEADER = "x-creative-bot-version";
 const HOSTNAME_HEADER = "x-creative-bot-hostname";
+const REFERENCE_PROTOCOL_VERSION = 20;
 
 export async function handleAgentApi(request: Request, env: Env, pathname: string): Promise<Response> {
   if (request.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
@@ -27,6 +28,7 @@ export async function handleAgentApi(request: Request, env: Env, pathname: strin
       ok: true,
       stats: await queue.stats(),
       references: await queue.referenceStats(),
+      referenceProtocol: REFERENCE_PROTOCOL_VERSION,
     });
   }
 
@@ -101,10 +103,11 @@ export async function handleAgentApi(request: Request, env: Env, pathname: strin
 
 async function handleReferencesApi(request: Request, env: Env, pathname: string): Promise<Response> {
   const queue = queueStub(env);
+  const configStore = new ConfigStore(env.CONFIG, env.ROOT_ADMIN_ID);
 
   if (pathname === "/agent/references/catalog-lease") {
     const lease = await queue.leaseReferenceCatalog(LOCAL_AGENT_ID);
-    return json({
+    return referenceJson({
       ok: true,
       catalog: lease,
       references: await queue.referenceStats(),
@@ -112,11 +115,20 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
   }
 
   if (pathname === "/agent/references/scan-lease") {
+    const warehouse = await configStore.getWarehouse();
+    if (!warehouse) {
+      return referenceJson({
+        ok: true,
+        scan: null,
+        warehouseMissing: true,
+        references: await queue.referenceStats(),
+      });
+    }
     const lease = await queue.leaseReferenceScan(LOCAL_AGENT_ID);
     if (!lease) {
-      return json({ ok: true, scan: null, references: await queue.referenceStats() });
+      return referenceJson({ ok: true, scan: null, references: await queue.referenceStats() });
     }
-    return json({
+    return referenceJson({
       ok: true,
       scan: lease,
       references: await queue.referenceStats(),
@@ -126,10 +138,9 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
   if (pathname === "/agent/references/upload-lease") {
     // Never lease or burn an upload attempt before the visible Telegram
     // warehouse has been configured. Earlier builds consumed all retries here.
-    const store = new ConfigStore(env.CONFIG, env.ROOT_ADMIN_ID);
-    const warehouse = await store.getWarehouse();
+    const warehouse = await configStore.getWarehouse();
     if (!warehouse) {
-      return json({
+      return referenceJson({
         ok: true,
         upload: null,
         warehouseMissing: true,
@@ -138,9 +149,9 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
     }
     const lease = await queue.leaseReferenceUpload(LOCAL_AGENT_ID);
     if (!lease) {
-      return json({ ok: true, upload: null, references: await queue.referenceStats() });
+      return referenceJson({ ok: true, upload: null, references: await queue.referenceStats() });
     }
-    return json({
+    return referenceJson({
       ok: true,
       upload: lease,
       warehouseChatId: warehouse.chatId,
@@ -150,8 +161,17 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
   }
 
   if (pathname === "/agent/references/delivery-lease") {
+    const warehouse = await configStore.getWarehouse();
+    if (!warehouse) {
+      return referenceJson({
+        ok: true,
+        delivery: null,
+        warehouseMissing: true,
+        references: await queue.referenceStats(),
+      });
+    }
     const lease = await queue.leaseReferenceDelivery(LOCAL_AGENT_ID);
-    return json({
+    return referenceJson({
       ok: true,
       delivery: lease,
       ...(lease ? { telegramBotToken: telegramBotToken(env) } : {}),
@@ -160,18 +180,18 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
   }
 
   if (pathname === "/agent/references/stats") {
-    return json({ ok: true, references: await queue.referenceStats() });
+    return referenceJson({ ok: true, references: await queue.referenceStats() });
   }
 
   const body = await readJson(request);
-  if (!body) return json({ ok: false, error: "Invalid JSON" }, 400);
+  if (!body) return referenceJson({ ok: false, error: "Invalid JSON" }, 400);
 
   if (pathname === "/agent/references/catalog-complete") {
     const leaseToken = text(body.leaseToken, 160);
     const niches = Array.isArray(body.niches)
       ? body.niches.filter(isRecord).slice(0, 2500) as unknown as ReferenceCatalogItem[]
       : [];
-    if (!leaseToken) return json({ ok: false, error: "leaseToken is required" }, 400);
+    if (!leaseToken) return referenceJson({ ok: false, error: "leaseToken is required" }, 400);
     const result = await queue.completeReferenceCatalog(
       LOCAL_AGENT_ID,
       leaseToken,
@@ -179,8 +199,8 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
       body.completeSnapshot === true,
     );
     return result
-      ? json({ ok: true, ...result, references: await queue.referenceStats() })
-      : json({ ok: false, error: "Catalog lease expired" }, 409);
+      ? referenceJson({ ok: true, ...result, references: await queue.referenceStats() })
+      : referenceJson({ ok: false, error: "Catalog lease expired" }, 409);
   }
 
   if (pathname === "/agent/references/catalog-fail") {
@@ -189,15 +209,15 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
       text(body.leaseToken, 160),
       text(body.error, 1200) || "Unknown RedGIFs catalog error",
     );
-    return done ? json({ ok: true }) : json({ ok: false, error: "Catalog lease expired" }, 409);
+    return done ? referenceJson({ ok: true }) : referenceJson({ ok: false, error: "Catalog lease expired" }, 409);
   }
 
   if (pathname === "/agent/references/enrich") {
     const mediaId = text(body.mediaId, 160);
     const item = isRecord(body.item) ? body.item as unknown as ReferenceDiscoveredItem : null;
-    if (!mediaId || !item) return json({ ok: false, error: "mediaId and item are required" }, 400);
+    if (!mediaId || !item) return referenceJson({ ok: false, error: "mediaId and item are required" }, 400);
     const result = await queue.enrichReferenceItem(mediaId, item);
-    return result ? json({ ok: true, item: result }) : json({ ok: false, error: "Reference not found" }, 404);
+    return result ? referenceJson({ ok: true, item: result }) : referenceJson({ ok: false, error: "Reference not found" }, 404);
   }
 
   if (pathname === "/agent/references/discover") {
@@ -205,9 +225,9 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
     const items = Array.isArray(body.items)
       ? body.items.filter(isRecord).slice(0, 10) as unknown as ReferenceDiscoveredItem[]
       : [];
-    if (!nicheSlug) return json({ ok: false, error: "nicheSlug is required" }, 400);
+    if (!nicheSlug) return referenceJson({ ok: false, error: "nicheSlug is required" }, 400);
     const uploads = await queue.discoverReferenceItems(nicheSlug, items);
-    return json({ ok: true, uploads });
+    return referenceJson({ ok: true, uploads });
   }
 
   if (pathname === "/agent/references/upload-complete") {
@@ -218,7 +238,7 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
     const warehouseChatId = text(body.warehouseChatId, 80);
     const warehouseMessageId = text(body.warehouseMessageId, 80);
     if (!mediaId || !leaseToken || !fileId || !warehouseChatId || !warehouseMessageId) {
-      return json({
+      return referenceJson({
         ok: false,
         error: "mediaId, leaseToken, fileId and warehouse message are required",
       }, 400);
@@ -232,7 +252,7 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
       warehouseChatId || undefined,
       warehouseMessageId || undefined,
     );
-    return result ? json({ ok: true, ...result }) : json({ ok: false, error: "Upload lease expired" }, 409);
+    return result ? referenceJson({ ok: true, ...result }) : referenceJson({ ok: false, error: "Upload lease expired" }, 409);
   }
 
   if (pathname === "/agent/references/upload-fail") {
@@ -243,7 +263,7 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
       text(body.error, 1200) || "Unknown RedGIFs upload error",
       clampNumber(body.retryAfterSeconds, 60, 3600, 300),
     );
-    return done ? json({ ok: true }) : json({ ok: false, error: "Upload lease expired" }, 409);
+    return done ? referenceJson({ ok: true }) : referenceJson({ ok: false, error: "Upload lease expired" }, 409);
   }
 
   if (pathname === "/agent/references/store") {
@@ -253,7 +273,7 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
     const warehouseChatId = text(body.warehouseChatId, 80);
     const warehouseMessageId = text(body.warehouseMessageId, 80);
     if (!mediaId || !fileId || !warehouseChatId || !warehouseMessageId) {
-      return json({ ok: false, error: "Warehouse message is required" }, 400);
+      return referenceJson({ ok: false, error: "Warehouse message is required" }, 400);
     }
     const result = await queue.storeReferenceMedia(
       mediaId,
@@ -262,7 +282,7 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
       warehouseChatId || undefined,
       warehouseMessageId || undefined,
     );
-    return json({ ok: true, ...result });
+    return referenceJson({ ok: true, ...result });
   }
 
   if (pathname === "/agent/references/scan-complete") {
@@ -271,7 +291,7 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
       text(body.nicheSlug, 120),
       text(body.leaseToken, 160),
     );
-    return done ? json({ ok: true }) : json({ ok: false, error: "Scan lease expired" }, 409);
+    return done ? referenceJson({ ok: true }) : referenceJson({ ok: false, error: "Scan lease expired" }, 409);
   }
 
   if (pathname === "/agent/references/scan-fail") {
@@ -281,7 +301,7 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
       text(body.leaseToken, 160),
       text(body.error, 1200) || "Unknown RedGIFs scan error",
     );
-    return done ? json({ ok: true }) : json({ ok: false, error: "Scan lease expired" }, 409);
+    return done ? referenceJson({ ok: true }) : referenceJson({ ok: false, error: "Scan lease expired" }, 409);
   }
 
   if (pathname === "/agent/references/delivery-complete") {
@@ -291,7 +311,7 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
       text(body.leaseToken, 160),
       text(body.telegramMessageId, 80),
     );
-    return done ? json({ ok: true }) : json({ ok: false, error: "Delivery lease expired" }, 409);
+    return done ? referenceJson({ ok: true }) : referenceJson({ ok: false, error: "Delivery lease expired" }, 409);
   }
 
   if (pathname === "/agent/references/delivery-fail") {
@@ -302,10 +322,15 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
       text(body.error, 1200) || "Unknown Telegram delivery error",
       clampNumber(body.retryAfterSeconds, 30, 3600, 120),
     );
-    return done ? json({ ok: true }) : json({ ok: false, error: "Delivery lease expired" }, 409);
+    return done ? referenceJson({ ok: true }) : referenceJson({ ok: false, error: "Delivery lease expired" }, 409);
   }
 
-  return json({ ok: false, error: "Not found" }, 404);
+  return referenceJson({ ok: false, error: "Not found" }, 404);
+}
+
+
+function referenceJson(body: Record<string, unknown>, status = 200): Response {
+  return json({ ...body, referenceProtocol: REFERENCE_PROTOCOL_VERSION }, status);
 }
 
 async function validAgentToken(token: string): Promise<boolean> {

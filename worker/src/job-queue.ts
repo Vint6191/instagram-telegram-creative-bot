@@ -334,9 +334,10 @@ export class JobQueue extends DurableObject<Env> {
          VALUES (1, 0, 0, 0)`,
       );
 
+      this.ctx.storage.sql.exec("DELETE FROM reference_curated_niches");
       for (const slug of CURATED_REFERENCE_NICHES) {
         this.ctx.storage.sql.exec(
-          "INSERT OR IGNORE INTO reference_curated_niches (slug) VALUES (?)",
+          "INSERT INTO reference_curated_niches (slug) VALUES (?)",
           slug,
         );
       }
@@ -344,31 +345,17 @@ export class JobQueue extends DurableObject<Env> {
       const curatedResetApplied = this.ctx.storage.sql
         .exec<{ value: number }>(
           "SELECT 1 AS value FROM reference_maintenance_state WHERE key = ?",
-          "curated-warehouse-reset-v19",
+          "curated-warehouse-reset-v20",
         )
         .toArray()[0];
       if (!curatedResetApplied) {
-        // V15/V18 created invisible file_id-only objects and could scan niches
-        // that are now excluded. Start the reference catalog clean, preserve
-        // models and only keep their still-curated niche selections.
-        this.ctx.storage.sql.exec("DELETE FROM reference_deliveries");
-        this.ctx.storage.sql.exec("DELETE FROM reference_media_niches");
-        this.ctx.storage.sql.exec("DELETE FROM reference_media");
-        this.ctx.storage.sql.exec(
-          `DELETE FROM reference_model_niches
-           WHERE niche_slug NOT IN (SELECT slug FROM reference_curated_niches)`,
-        );
-        this.ctx.storage.sql.exec("DELETE FROM reference_niches");
-        this.ctx.storage.sql.exec(
-          `UPDATE reference_catalog_state SET
-            next_sync_at = 0, last_synced_at = NULL, last_sync_error = NULL,
-            last_catalog_size = 0, lease_owner = NULL, lease_token = NULL,
-            lease_expires_at = NULL
-           WHERE id = 1`,
-        );
+        // V20 deliberately resets the reference ledger once more. Mixed V18/V19
+        // deployments could leave file_id-only deliveries that bypassed the
+        // visible warehouse. Models and their still-curated selections survive.
+        this.resetReferenceDataNow();
         this.ctx.storage.sql.exec(
           "INSERT INTO reference_maintenance_state (key, applied_at) VALUES (?, ?)",
-          "curated-warehouse-reset-v19",
+          "curated-warehouse-reset-v20",
           Date.now(),
         );
       }
@@ -614,6 +601,10 @@ export class JobQueue extends DurableObject<Env> {
       onlineAgents: Number(online ?? 0),
       ...(counts.oldest_queued_at ? { oldestQueuedAt: Number(counts.oldest_queued_at) } : {}),
     };
+  }
+
+  async resetReferenceData(): Promise<void> {
+    this.resetReferenceDataNow();
   }
 
   async requestReferenceCatalogSync(): Promise<void> {
@@ -1206,10 +1197,15 @@ export class JobQueue extends DurableObject<Env> {
     const now = Date.now();
     const row = this.ctx.storage.sql
       .exec<ReferenceMediaRow>(
-        `SELECT * FROM reference_media
-         WHERE file_id IS NULL AND upload_status = 'pending'
-           AND upload_available_at <= ? AND upload_attempt_count < 7
-         ORDER BY created_at ASC, id ASC LIMIT 1`,
+        `SELECT r.* FROM reference_media r
+         WHERE r.file_id IS NULL AND r.upload_status = 'pending'
+           AND r.upload_available_at <= ? AND r.upload_attempt_count < 7
+           AND EXISTS (
+             SELECT 1 FROM reference_media_niches rm
+             JOIN reference_curated_niches c ON c.slug = rm.niche_slug
+             WHERE rm.media_id = r.id
+           )
+         ORDER BY r.created_at ASC, r.id ASC LIMIT 1`,
         now,
       )
       .toArray()[0];
@@ -1486,6 +1482,7 @@ export class JobQueue extends DurableObject<Env> {
       FROM reference_models m
       WHERE m.active = 1 AND EXISTS (
         SELECT 1 FROM reference_model_niches mn
+        JOIN reference_curated_niches c ON c.slug = mn.niche_slug
         JOIN reference_media_niches rm ON rm.niche_slug = mn.niche_slug
         WHERE mn.model_chat_id = m.chat_id AND rm.media_id = ?
       )`,
@@ -1506,6 +1503,7 @@ export class JobQueue extends DurableObject<Env> {
       SELECT 'refd_' || hex(randomblob(12)), ?, r.id, 'pending', 0, ?, ?, ?
       FROM reference_media r
       JOIN reference_media_niches rm ON rm.media_id = r.id
+      JOIN reference_curated_niches c ON c.slug = rm.niche_slug
       WHERE rm.niche_slug = ? AND r.file_id IS NOT NULL
         AND r.warehouse_chat_id IS NOT NULL AND r.warehouse_message_id IS NOT NULL`,
       chatId,
@@ -1722,6 +1720,24 @@ export class JobQueue extends DurableObject<Env> {
         now,
       )
       .toArray()[0] ?? null;
+  }
+
+  private resetReferenceDataNow(): void {
+    this.ctx.storage.sql.exec("DELETE FROM reference_deliveries");
+    this.ctx.storage.sql.exec("DELETE FROM reference_media_niches");
+    this.ctx.storage.sql.exec("DELETE FROM reference_media");
+    this.ctx.storage.sql.exec(
+      `DELETE FROM reference_model_niches
+       WHERE niche_slug NOT IN (SELECT slug FROM reference_curated_niches)`,
+    );
+    this.ctx.storage.sql.exec("DELETE FROM reference_niches");
+    this.ctx.storage.sql.exec(
+      `UPDATE reference_catalog_state SET
+        next_sync_at = 0, last_synced_at = NULL, last_sync_error = NULL,
+        last_catalog_size = 0, lease_owner = NULL, lease_token = NULL,
+        lease_expires_at = NULL
+       WHERE id = 1`,
+    );
   }
 
   private releaseExpiredReferenceLeases(): void {

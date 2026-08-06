@@ -551,6 +551,25 @@ export class UpdateHandler {
         await this.telegram.answerCallbackQuery(query.id, "Обновление каталога поставлено в очередь");
         await this.editReferencesHome(chatId, messageId);
         return;
+      } else if (data === "rrs:ask") {
+        await this.telegram.editMessageText(
+          chatId,
+          messageId,
+          "<b>Полностью пересобрать референсы?</b>\n\nБудут удалены старый каталог, media/file_id и очереди. Модели и выбранные разрешённые ниши сохранятся. Новые ролики сначала обязаны появиться на складе.",
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "Да, очистить", callback_data: "rrs:yes" }],
+                [{ text: "Отмена", callback_data: "rh" }],
+              ],
+            },
+          },
+        );
+      } else if (data === "rrs:yes") {
+        await queueStub(this.env).resetReferenceData();
+        await this.telegram.answerCallbackQuery(query.id, "Референсы очищены и поставлены на пересборку");
+        await this.editReferencesHome(chatId, messageId);
+        return;
       }
 
       await this.telegram.answerCallbackQuery(query.id);
@@ -898,7 +917,7 @@ function referencesHomeText(stats: {
       ? `обновлён ${formatAge(Date.now() - stats.catalogSyncedAt)} назад`
       : "ещё не получен";
   return [
-    "<b>Референсы</b>",
+    "<b>Референсы · V20</b>",
     "",
     `👤 Моделей: <b>${stats.models}</b>`,
     `🔥 Ниш RedGIFs: <b>${stats.catalogNiches}</b> · ${catalogState}`,
@@ -923,6 +942,7 @@ function referencesHomeKeyboard(): Record<string, unknown> {
         { text: "🔥 Все ниши", callback_data: "rns:0" },
       ],
       [{ text: "↻ Обновить каталог ниш", callback_data: "rcs" }],
+      [{ text: "🧹 Пересобрать референсы", callback_data: "rrs:ask" }],
       [{ text: "← Настройки", callback_data: CALLBACK.HOME }],
     ],
   };

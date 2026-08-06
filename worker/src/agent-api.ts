@@ -124,21 +124,21 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
   }
 
   if (pathname === "/agent/references/upload-lease") {
-    const lease = await queue.leaseReferenceUpload(LOCAL_AGENT_ID);
-    if (!lease) {
-      return json({ ok: true, upload: null, references: await queue.referenceStats() });
-    }
+    // Never lease or burn an upload attempt before the visible Telegram
+    // warehouse has been configured. Earlier builds consumed all retries here.
     const store = new ConfigStore(env.CONFIG, env.ROOT_ADMIN_ID);
     const warehouse = await store.getWarehouse();
     if (!warehouse) {
-      await queue.failReferenceUpload(
-        LOCAL_AGENT_ID,
-        lease.id,
-        lease.leaseToken,
-        "Warehouse chat is not configured",
-        600,
-      );
-      return json({ ok: false, error: "Склад референсов не назначен" }, 409);
+      return json({
+        ok: true,
+        upload: null,
+        warehouseMissing: true,
+        references: await queue.referenceStats(),
+      });
+    }
+    const lease = await queue.leaseReferenceUpload(LOCAL_AGENT_ID);
+    if (!lease) {
+      return json({ ok: true, upload: null, references: await queue.referenceStats() });
     }
     return json({
       ok: true,
@@ -217,8 +217,11 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
     const fileUniqueId = text(body.fileUniqueId, 600);
     const warehouseChatId = text(body.warehouseChatId, 80);
     const warehouseMessageId = text(body.warehouseMessageId, 80);
-    if (!mediaId || !leaseToken || !fileId) {
-      return json({ ok: false, error: "mediaId, leaseToken and fileId are required" }, 400);
+    if (!mediaId || !leaseToken || !fileId || !warehouseChatId || !warehouseMessageId) {
+      return json({
+        ok: false,
+        error: "mediaId, leaseToken, fileId and warehouse message are required",
+      }, 400);
     }
     const result = await queue.completeReferenceUpload(
       LOCAL_AGENT_ID,
@@ -249,7 +252,9 @@ async function handleReferencesApi(request: Request, env: Env, pathname: string)
     const fileUniqueId = text(body.fileUniqueId, 600);
     const warehouseChatId = text(body.warehouseChatId, 80);
     const warehouseMessageId = text(body.warehouseMessageId, 80);
-    if (!mediaId || !fileId) return json({ ok: false, error: "mediaId and fileId are required" }, 400);
+    if (!mediaId || !fileId || !warehouseChatId || !warehouseMessageId) {
+      return json({ ok: false, error: "Warehouse message is required" }, 400);
+    }
     const result = await queue.storeReferenceMedia(
       mediaId,
       fileId,

@@ -73,6 +73,8 @@ export interface ReferenceDeliveryLease {
   modelName: string;
   mediaId: string;
   fileId: string;
+  warehouseChatId?: string;
+  warehouseMessageId?: string;
   sourceUrl: string;
   description?: string;
   hashtags: string[];

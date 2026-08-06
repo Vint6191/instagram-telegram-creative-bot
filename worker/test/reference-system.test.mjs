@@ -48,6 +48,8 @@ describe("reference repository integration", () => {
     repo.init();
 
     expect(repo.stats().catalogNiches).toBe(473);
+    expect(repo.stats().catalogStoredNiches).toBe(473);
+    expect(repo.stats().catalogReady).toBe(true);
     expect(repo.listGroups()).toEqual([]);
     expect(db.prepare("SELECT COUNT(*) count FROM sqlite_master WHERE type='table' AND name='reference_models'").get().count).toBe(0);
     expect(db.prepare("SELECT COUNT(*) count FROM ref4_catalog WHERE slug='3d-porn'").get().count).toBe(0);

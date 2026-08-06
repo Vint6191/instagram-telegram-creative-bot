@@ -1,0 +1,20 @@
+FIX V4.0.1 — ЛОЖНЫЙ WRONG REFERENCE CATALOG
+
+Причина подтверждена по самому ответу GitHub Actions:
+он содержал поля models, activeNiches и catalogPending, которых вообще нет
+в Worker из архива V4. Значит после deploy/secret put Cloudflare кратко отдала
+предыдущую версию Worker с тем же appVersion/architecture.
+
+Что изменено:
+- appVersion Worker: 4.0.1;
+- в конфиг деплоя вшивается точный GITHUB_SHA как BUILD_ID;
+- /health возвращает buildId;
+- /health возвращает реальное количество строк ref4_catalog:
+  catalogStoredNiches и catalogReady;
+- GitHub Actions больше не делает одиночный curl;
+- Actions до 30 раз ждёт exact buildId + 473 строк в SQLite;
+- проверка старой версии с похожим номером больше невозможна;
+- исправлена двусмысленная инструкция копирования Worker.
+
+Каталог не переделывался:
+XLSX и встроенный reference-catalog.ts уже совпадали по всем 473 строкам.

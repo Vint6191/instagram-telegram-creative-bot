@@ -68,6 +68,8 @@ export interface ReferenceStats {
   activeGroups: number;
   catalogNiches: number;
   catalogVersion: string;
+  catalogStoredNiches: number;
+  catalogReady: boolean;
   storedMedia: number;
   pendingUploads: number;
   pendingDeliveries: number;

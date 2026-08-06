@@ -1,0 +1,18 @@
+ПАТЧ ТОЛЬКО ДЛЯ GITHUB WORKER. DESKTOP ПЕРЕУСТАНАВЛИВАТЬ НЕ НУЖНО.
+
+1. Открой корень GitHub-репозитория, где уже лежат папки .github и worker.
+2. Скопируй содержимое этого архива поверх репозитория с заменой файлов.
+3. Ничего не удаляй из очереди, KV или Cloudflare вручную.
+4. Commit + Push в main.
+5. Дождись зелёного Deploy Telegram queue worker.
+6. В финальном /health должны быть:
+   appVersion: 4.0.1
+   architecture: creative-reference-split-v4
+   referenceProtocol: 5
+   buildId: SHA текущего GitHub commit
+   references.catalogNiches: 473
+   references.catalogStoredNiches: 473
+   references.catalogReady: true
+
+Если Action сначала увидит старую Cloudflare-версию, он теперь не упадёт сразу,
+а будет ждать точный buildId до 5 минут.

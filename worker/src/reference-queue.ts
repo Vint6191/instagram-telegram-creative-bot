@@ -427,6 +427,7 @@ export class ReferenceQueueRepository {
         pending_uploads: number;
         pending_deliveries: number;
         sent_deliveries: number;
+        catalog_stored_niches: number;
         failed_niches: number;
         failed_uploads: number;
         failed_deliveries: number;
@@ -440,18 +441,26 @@ export class ReferenceQueueRepository {
           (SELECT COUNT(*) FROM ref4_media WHERE upload_status IN ('pending', 'leased')) AS pending_uploads,
           (SELECT COUNT(*) FROM ref4_deliveries WHERE status IN ('pending', 'leased')) AS pending_deliveries,
           (SELECT COUNT(*) FROM ref4_deliveries WHERE status = 'sent') AS sent_deliveries,
+          (SELECT COUNT(*) FROM ref4_catalog) AS catalog_stored_niches,
           (SELECT COUNT(*) FROM ref4_niche_runtime WHERE last_scan_error IS NOT NULL) AS failed_niches,
           (SELECT COUNT(*) FROM ref4_media WHERE upload_status = 'failed') AS failed_uploads,
           (SELECT COUNT(*) FROM ref4_deliveries WHERE status = 'failed') AS failed_deliveries,
           (SELECT MAX(last_scanned_at) FROM ref4_niche_runtime) AS last_scan_at`,
       )
       .one();
+    const catalogStoredNiches = Number(row.catalog_stored_niches ?? 0);
+    const catalogReady =
+      catalogStoredNiches === REFERENCE_CATALOG_COUNT
+      && this.getMeta("catalog_version") === REFERENCE_CATALOG_VERSION
+      && this.getMeta("catalog_count") === String(REFERENCE_CATALOG_COUNT);
     return {
       enabled: this.isEnabled(),
       groups: Number(row.groups_count ?? 0),
       activeGroups: Number(row.active_groups ?? 0),
       catalogNiches: REFERENCE_CATALOG_COUNT,
       catalogVersion: REFERENCE_CATALOG_VERSION,
+      catalogStoredNiches,
+      catalogReady,
       storedMedia: Number(row.stored_media ?? 0),
       pendingUploads: Number(row.pending_uploads ?? 0),
       pendingDeliveries: Number(row.pending_deliveries ?? 0),

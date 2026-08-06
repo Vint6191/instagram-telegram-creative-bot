@@ -1,0 +1,80 @@
+ПРОВЕРКА ПОЛНОЙ ПЕРЕРАБОТКИ 4.0
+Дата проверки: 2026-08-07
+
+ЧТО ПРОВЕРЕНО ЛОКАЛЬНО
+
+1. Desktop Python:
+   - python -m pytest -q
+   - результат: 18 passed
+   - compileall creative_bot + creative_desktop: OK
+
+2. Worker TypeScript:
+   - строгая проверка всех worker/src/**/*.ts через tsc;
+   - результат: OK
+
+3. Reference SQLite integration:
+   - при инициализации физически удаляются известные старые reference_* и ref3_* таблицы;
+   - очередь Instagram-креативов и agent presence не затрагиваются;
+   - новый ref4 storage начинает reference-контур чистым;
+   - каталог содержит ровно 473 утверждённые ниши;
+   - исключённая 3d-porn не попадает в каталог и metadata;
+   - разрешённая 3-somes проходит;
+   - общий scan throttle выдаёт не больше одной ниши за интервал 1 час / 473;
+   - каждая завершённая ниша планируется снова через час;
+   - upload lease привязан к точному warehouse chat;
+   - сохраняются warehouse_chat_id + warehouse_message_id;
+   - доставка берёт только реальное складское сообщение;
+   - delivery reconciliation идемпотентен;
+   - новая группа получает backfill;
+   - удаление группы не ломает подтверждение уже отправленной in-flight доставки.
+   - результат: reference integration: OK
+
+4. Telegram update inbox:
+   - один update_id нельзя обрабатывать параллельно;
+   - успешный update помечается done;
+   - ошибочный update освобождается для повторной доставки Telegram.
+   - результат: OK
+
+5. Telegram callback_data:
+   - реальный callback выбора ниши проходит;
+   - значение длиннее 64 байт блокируется до отправки Telegram.
+   - результат: OK
+
+6. Связка desktop ↔ Worker:
+   - встроенный desktop agent token соответствует SHA-256, зашитому в Worker;
+   - значение секрета в отчёт не выводилось.
+   - результат: OK
+
+7. XLSX-каталог:
+   - источник прочитан через artifact_tool;
+   - лист: ВКЛЮЧАЕМ;
+   - строк: 473;
+   - уникальных slug: 473;
+   - slug/title/description в reference-catalog.ts точно совпадают с XLSX;
+   - SHA-256 отсортированного списка slug:
+     abf4c06a0ce79a6671ac8e6f3c06f3b267c3d2b56232d535f719f15922d60f7c
+
+8. Архитектурные запреты:
+   - ручного runtime-обновления каталога ниш нет;
+   - один Telegram-чат нельзя назначить одновременно креативам, складу и группе модели;
+   - доставки модели через Telegram file_id нет: только copyMessage из warehouse_chat_id + warehouse_message_id;
+   - Worker с несовместимым reference protocol блокируется desktop-приложением;
+   - локальные upload/delivery receipts сохраняются до подтверждения Worker и защищают от повторной отправки.
+
+ЧТО НЕ БЫЛО ВОЗМОЖНО ПРОВЕРИТЬ В ЭТОЙ СРЕДЕ
+
+- npm install и полный Vitest запуск локально: sandbox не дал скачать зависимости из npm registry.
+  Тесты Vitest находятся в worker/test и запускаются GitHub Actions командой npm run check.
+- реальный Cloudflare deploy;
+- живой Telegram Bot API на пользовательском токене;
+- фактическая публикация в пользовательский канал-склад и группы моделей;
+- живые ответы RedGIFs API.
+
+Честная граница проверки: код, типы, SQLite-логика, каталог, протокол и локальные Python-тесты проверены. Внешний live-контур подтверждается после деплоя по инструкции и проверки /health.
+
+9. Deployment readiness:
+   - Worker получает BUILD_ID из точного GitHub commit SHA;
+   - /health возвращает buildId и реальное число строк ref4_catalog;
+   - GitHub Actions ждёт до 150 секунд именно текущий commit, а не старую Cloudflare-версию;
+   - релиз считается готовым только при catalogNiches=473,
+     catalogStoredNiches=473 и catalogReady=true.

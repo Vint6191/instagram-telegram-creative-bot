@@ -6,6 +6,7 @@ export interface Env {
   TELEGRAM_BOT_TOKEN?: string;
   ROOT_ADMIN_ID?: string;
   ADMIN_CLAIM_CODE?: string;
+  BUILD_ID?: string;
 }
 
 export type ChatType = "private" | "group" | "supergroup" | "channel";

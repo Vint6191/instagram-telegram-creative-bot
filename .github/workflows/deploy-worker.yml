@@ -85,6 +85,7 @@ jobs:
 
           source = Path("worker/wrangler.toml").read_text(encoding="utf-8")
           source = source.replace("__KV_NAMESPACE_ID__", os.environ["KV_NAMESPACE_ID"])
+          source = source.replace("__BUILD_ID__", os.environ["GITHUB_SHA"])
           Path("worker/wrangler.generated.toml").write_text(source, encoding="utf-8")
           PY
 
@@ -142,12 +143,44 @@ jobs:
           [[ -n "$subdomain" && "$subdomain" != "null" ]] || { echo "Could not resolve workers.dev subdomain" >&2; exit 1; }
 
           worker_url="https://instagram-creative-bot.${subdomain}.workers.dev"
-          health="$(curl --fail-with-body --silent --show-error "$worker_url/health")"
-          [[ "$(jq -r '.ok' <<<"$health")" == "true" ]] || { echo "$health" >&2; exit 1; }
-          [[ "$(jq -r '.appVersion' <<<"$health")" == "4.0.0" ]] || { echo "Wrong Worker version" >&2; echo "$health" >&2; exit 1; }
-          [[ "$(jq -r '.architecture' <<<"$health")" == "creative-reference-split-v4" ]] || { echo "Wrong Worker architecture" >&2; echo "$health" >&2; exit 1; }
-          [[ "$(jq -r '.referenceProtocol' <<<"$health")" == "5" ]] || { echo "Wrong reference protocol" >&2; echo "$health" >&2; exit 1; }
-          [[ "$(jq -r '.references.catalogNiches' <<<"$health")" == "473" ]] || { echo "Wrong reference catalog" >&2; echo "$health" >&2; exit 1; }
+
+          # Cloudflare can briefly serve the previous Worker version after deploy
+          # and after each secret update. Never validate a release by appVersion
+          # alone: older code may have the same human version. Wait for the exact
+          # Git commit and for the catalog to exist in Durable Object SQLite.
+          ready=0
+          health=""
+          for attempt in {1..60}; do
+            health="$(curl --silent --show-error \
+              -H "Cache-Control: no-cache" \
+              "$worker_url/health?build=${GITHUB_SHA}&attempt=${attempt}" || true)"
+
+            if jq -e \
+              --arg build "$GITHUB_SHA" \
+              '.ok == true
+               and .appVersion == "4.0.1"
+               and .architecture == "creative-reference-split-v4"
+               and .referenceProtocol == 5
+               and .buildId == $build
+               and .references.catalogNiches == 473
+               and .references.catalogStoredNiches == 473
+               and .references.catalogReady == true' \
+              >/dev/null 2>&1 <<<"$health"; then
+              ready=1
+              break
+            fi
+
+            echo "Waiting for exact Worker build and ready catalog ($attempt/60)..."
+            [[ -n "$health" ]] && echo "$health"
+            sleep 5
+          done
+
+          [[ "$ready" == "1" ]] || {
+            echo "The exact Worker build never became ready" >&2
+            echo "Expected buildId: $GITHUB_SHA" >&2
+            echo "$health" >&2
+            exit 1
+          }
           echo "$health"
 
           # Secret updates create a new Worker version. Wait until that version

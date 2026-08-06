@@ -1,29 +1,63 @@
-# Instagram → Telegram Creative Bot
+# Instagram Creative Bot — Worker 4.0
 
-Cloudflare Worker receives Instagram links from Telegram, stores them in a durable queue, and the local Windows/PyCharm application downloads and publishes them.
+Это полный Worker для двух независимых контуров:
 
-## What is in this repository
+- **Креативы** — Telegram принимает одну Instagram-ссылку, сохраняет задачу в durable-очереди, локальный desktop скачивает и публикует её в выбранный канал/группу.
+- **Референсы** — Worker использует встроенный утверждённый каталог из 473 RedGIFs-ниш, раздаёт локальному desktop задания на HOT-10, хранит складские сообщения и копирует их в группы моделей.
 
-- `worker/` — Telegram webhook, access control, target channel settings, durable queue and local-agent API.
-- `.github/workflows/deploy-worker.yml` — checks, deploys the Worker, preserves the existing KV configuration and configures the Telegram webhook.
+Креативы и референсы не используют общие настройки назначения и не смешиваются в меню.
 
-The local PyCharm application is intentionally not stored here: its private agent token must not be published in GitHub.
+## Архитектура референсов
 
-## Required GitHub Actions secrets
+Источник истины по нишам — `worker/src/reference-catalog.ts`. Он сгенерирован из листа `ВКЛЮЧАЕМ` файла `catalog/redgifs_niches_of_references_catalog.xlsx`:
 
-Already-created repository secrets are preserved when repository files are replaced.
+- 473 уникальные ниши;
+- версия каталога `abf4c06a0ce79a66`;
+- онлайн-обновления каталога и кнопки ручного обновления отсутствуют;
+- любые metadata-ниши RedGIFs, которых нет в каталоге, отбрасываются до сохранения и маршрутизации.
+
+Новый reference storage использует только таблицы `ref4_*`. При первом запуске известные старые `reference_*`/`ref3_*` таблицы физически удаляются и не мигрируются; очередь креативов `jobs` не затрагивается.
+
+Путь референса строго один:
+
+`RedGIFs HOT → desktop download → Telegram warehouse post → copyMessage → model group`
+
+Отправки модели по `file_id` в обход склада нет.
+
+## Меню бота
+
+`/menu` открывает три независимых раздела:
+
+- `🎨 Креативы` — места публикации и очередь;
+- `🎞 Референсы` — склад, группы моделей, категории и ниши;
+- `👥 Доступ` — приглашения пользователей.
+
+Добавление чатов:
+
+- в группе/канале креативов: `/creative Название`;
+- в рабочей группе модели: `/reference Имя модели`;
+- для канала-склада: перешли боту в личку любой пост из канала и выбери «Склад референсов»; либо отправь в личке `/warehouse CHAT_ID`;
+- для канала можно переслать боту любой пост и выбрать назначение кнопкой.
+
+Места креативов, склад и группы моделей имеют взаимоисключающие роли: один чат нельзя назначить сразу в два контура.
+
+## Деплой
+
+GitHub Actions использует секреты:
 
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
 - `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_WEBHOOK_SECRET`
-- `SETUP_TOKEN`
+- опционально `ROOT_ADMIN_ID`, `ADMIN_CLAIM_CODE`
 
-Optional: `ROOT_ADMIN_ID`, `ADMIN_CLAIM_CODE`.
+Workflow сам находит/создаёт KV, деплоит Durable Object и настраивает webhook/команды Telegram.
 
-## Normal operation
+После деплоя `/health` должен вернуть:
 
-1. Start the local PyCharm application with `main.py`.
-2. Send one Instagram Reel/post link to the Telegram bot.
-3. The Worker stores it even while the computer is offline.
-4. The local application downloads the media, publishes it with statistics, and cleans temporary files.
+- `appVersion: 4.0.1`
+- `architecture: creative-reference-split-v4`
+- `referenceProtocol: 5`
+- `buildId: <точный Git commit SHA>`
+- `references.catalogNiches: 473`
+- `references.catalogStoredNiches: 473`
+- `references.catalogReady: true`

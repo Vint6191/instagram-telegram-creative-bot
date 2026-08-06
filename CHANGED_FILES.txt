@@ -1,0 +1,14 @@
+.github/workflows/deploy-worker.yml
+worker/package.json
+worker/wrangler.toml
+worker/src/index.ts
+worker/src/types.ts
+worker/src/reference-types.ts
+worker/src/reference-queue.ts
+worker/test/reference-system.test.mjs
+README.md
+ПРОВЕРКА.txt
+УСТАНОВКА.txt
+FIX_V4.0.1.txt
+КАК_УСТАНОВИТЬ_ПАТЧ.txt
+CHANGED_FILES.txt
